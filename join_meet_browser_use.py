@@ -150,9 +150,11 @@ Steps:
 3. If a visible guest name field exists, fill it with "{display_name}".
 4. If microphone or camera toggles are on in the pre-join screen, turn them off.
 5. Click the best available join button, preferring "Ask to join", then "Join now", then "Request to join", then "Join".
-6. If the page says sign-in is required, host approval is required, the request was denied, or the meeting cannot be joined, stop and report the exact visible reason.
-7. After clicking the join button, remain on the meeting page and do not navigate away.
-8. Finish only after you have either joined successfully or clearly determined that Google Meet blocked entry.
+6. Treat the guest pre-join area as the source of truth. If the page shows a name input and a join button, continue the guest join flow even if a top-right "Sign in" link, tooltip, or helper bubble is also visible.
+7. Do not treat a generic top-right "Sign in" link or tooltip as a blocking condition by itself. Only treat sign-in as blocking if the main page content explicitly says sign-in is required or the meeting cannot be joined without it.
+8. If the page says host approval is required, the request was denied, or the meeting cannot be joined, stop and report the exact visible reason.
+9. After clicking the join button, remain on the meeting page and do not navigate away.
+10. Finish only after you have either joined successfully or clearly determined that Google Meet blocked entry.
 """.strip()
 
 
@@ -200,6 +202,7 @@ async def main():
     display_name = os.environ.get("GMEET_DISPLAY_NAME", "Orbit Agent")
     wait_after_run_ms = env_int("GMEET_WAIT_AFTER_JOIN_MS", 120000)
     max_steps = env_int("GMEET_BROWSER_USE_MAX_STEPS", 20)
+    model_name = os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
     openai_api_key = os.environ.get("OPENAI_API_KEY")
 
     if not meet_url:
@@ -210,7 +213,7 @@ async def main():
     DEBUG_DIR.mkdir(exist_ok=True)
     CONVERSATION_DIR.mkdir(parents=True, exist_ok=True)
 
-    llm = ChatOpenAI(model="gpt-5-nano")
+    llm = ChatOpenAI(model=model_name)
     browser = build_browser(Browser)
 
     agent = Agent(
@@ -224,7 +227,7 @@ async def main():
     )
 
     log(f"Opening Meet URL: {meet_url}")
-    log("Model: gpt-5-nano")
+    log(f"Model: {model_name}")
     log(f"Agent max steps: {max_steps}")
     history = None
 
