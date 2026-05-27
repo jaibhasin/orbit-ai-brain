@@ -1,1 +1,2 @@
 playwright==1.54.0
+browser-use
