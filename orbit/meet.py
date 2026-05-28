@@ -55,8 +55,7 @@ Steps:
 def build_intro_message(display_name):
     return (
         "Hi everyone, I’m Orbit. "
-        "I’ll be recording and monitoring this meeting, and I can help answer questions "
-        "or surface context in chat when needed. "
+        "I’ll be recording and monitoring this meeting."
         "Mention @orbit in chat to get my attention."
     )
 
@@ -113,6 +112,12 @@ async def emit_status(callbacks, state, status, detail=None):
 async def emit_chat_message(callbacks, state, message, source):
     if callbacks and callbacks.on_chat_message:
         await maybe_await(callbacks.on_chat_message(state, message, source))
+
+
+async def emit_orbit_mention(callbacks, state, message):
+    if callbacks and callbacks.on_orbit_mention:
+        return await maybe_await(callbacks.on_orbit_mention(state, message))
+    return None
 
 
 async def emit_finished(callbacks, state):
@@ -504,6 +509,21 @@ def message_mentions_orbit(message):
     return bool(ORBIT_MENTION_PATTERN.search(message.normalized_text))
 
 
+def is_orbit_authored_message(state, message):
+    author = (message.author or "").strip().lower()
+    raw_text = (message.raw_text or "").strip().lower()
+    normalized_text = (message.normalized_text or "").strip().lower()
+    display_name = (state.display_name or "").strip().lower()
+    intro_text = build_intro_message(state.display_name).strip().lower()
+
+    return (
+        (display_name and display_name in author)
+        or author in {"orbit", "orbit agent", "orbit (ai agent)"}
+        or raw_text.startswith(intro_text)
+        or normalized_text.startswith(intro_text)
+    )
+
+
 def grant_speak_permission(state, message):
     state.pending_speak_permissions += 1
     state.permission_events.append(
@@ -521,7 +541,7 @@ def grant_speak_permission(state, message):
     )
 
 
-async def process_messages(state, messages, source, callbacks=None):
+async def process_messages(page, state, messages, source, callbacks=None):
     new_messages = [
         message
         for message in messages
@@ -532,6 +552,10 @@ async def process_messages(state, messages, source, callbacks=None):
 
     for message in new_messages:
         state.seen_message_fingerprints.add(message.fingerprint)
+        if is_orbit_authored_message(state, message):
+            log(f"Ignoring Orbit-authored chat message ({source}).", state.session_id)
+            continue
+
         state.captured_messages.append(message)
         log(
             f"New chat message ({source}) from "
@@ -541,6 +565,13 @@ async def process_messages(state, messages, source, callbacks=None):
         await emit_chat_message(callbacks, state, message, source)
         if message_mentions_orbit(message):
             grant_speak_permission(state, message)
+            reply = await emit_orbit_mention(callbacks, state, message)
+            if reply:
+                sent = await send_chat_message(page, reply)
+                if sent:
+                    log(f"Sent Orbit mention reply: {reply}", state.session_id)
+                else:
+                    log("Could not send Orbit mention reply.", state.session_id)
 
 
 async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
@@ -560,14 +591,14 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
         await send_introduction(page, state)
         initial_messages = await collect_visible_chat_messages(page)
         log(f"Scanned {len(initial_messages)} visible chat messages at monitor start.", state.session_id)
-        await process_messages(state, initial_messages, "startup", callbacks)
+        await process_messages(page, state, initial_messages, "startup", callbacks)
 
     deadline = asyncio.get_running_loop().time() + (wait_after_run_ms / 1000)
     while asyncio.get_running_loop().time() < deadline:
         if chat_open:
             try:
                 messages = await collect_visible_chat_messages(page)
-                await process_messages(state, messages, "poll", callbacks)
+                await process_messages(page, state, messages, "poll", callbacks)
             except Exception as error:
                 log(f"Chat polling failed: {error}", state.session_id)
         await asyncio.sleep(POLL_INTERVAL_MS / 1000)

@@ -60,6 +60,7 @@ class MeetingSessionConfig:
 class MeetingSessionCallbacks:
     on_status: Callable[[MeetingState, str, str | None], Any] | None = None
     on_chat_message: Callable[[MeetingState, ChatMessage, str], Any] | None = None
+    on_orbit_mention: Callable[[MeetingState, ChatMessage], Any] | None = None
     on_finished: Callable[[MeetingState], Any] | None = None
 
 

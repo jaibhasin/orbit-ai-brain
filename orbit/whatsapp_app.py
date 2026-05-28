@@ -37,6 +37,7 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
+@app.post("/api/whatsapp/inbound")
 @app.post("/twilio/whatsapp")
 async def whatsapp_webhook(
     request: Request,

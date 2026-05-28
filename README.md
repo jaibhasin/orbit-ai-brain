@@ -152,6 +152,18 @@ DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
 
 Persistent memory requires Postgres with the `vector` extension available.
 
+For local development, start the included pgvector database:
+
+```bash
+docker compose up -d orbit-postgres
+```
+
+Then set this in `.env` and restart the WhatsApp agent:
+
+```text
+DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
+```
+
 Orbit creates its v1 tables automatically on first memory use:
 
 - `orbit_meet_sessions`
@@ -186,6 +198,12 @@ Configure the Twilio WhatsApp webhook as:
 
 ```text
 POST https://your-ngrok-domain/twilio/whatsapp
+```
+
+The app also accepts this equivalent inbound URL:
+
+```text
+POST https://your-ngrok-domain/api/whatsapp/inbound
 ```
 
 If port `8000` is busy, use another port:

@@ -28,6 +28,10 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 MEET_LINK_PATTERN = re.compile(r"https://meet\.google\.com/[^\s<>\"]+", re.IGNORECASE)
 QNA_TRIGGER_PATTERN = re.compile(r"^\s*(?:@orbit\b|orbit\s*:)\s*", re.IGNORECASE)
+INSUFFICIENT_MEMORY_PHRASES = (
+    "persistent company memory is not configured",
+    "i do not have enough company memory",
+)
 
 
 @dataclass
@@ -179,6 +183,7 @@ class OrbitWhatsAppService:
         callbacks = MeetingSessionCallbacks(
             on_status=self.handle_session_status,
             on_chat_message=self.handle_chat_message,
+            on_orbit_mention=self.handle_orbit_mention,
             on_finished=self.handle_session_finished,
         )
         try:
@@ -262,6 +267,52 @@ class OrbitWhatsAppService:
         except Exception as error:
             log(f"Memory write failed for Meet {state.meeting_code}: {error}", state.session_id)
 
+    async def handle_orbit_mention(self, state: MeetingState, message: ChatMessage):
+        question = strip_qna_trigger(message.normalized_text)
+        if not question:
+            return "I’m here. Ask me a question after @orbit."
+
+        recent_messages = [
+            chat_message
+            for chat_message in state.captured_messages[-15:]
+            if chat_message.fingerprint != message.fingerprint
+        ]
+        context = "\n".join(
+            f"{chat_message.author or 'unknown'}"
+            f"{f' [{chat_message.timestamp_text}]' if chat_message.timestamp_text else ''}: "
+            f"{chat_message.normalized_text}"
+            for chat_message in recent_messages
+        )
+
+        prompt = (
+            "Answer the in-meeting chat question briefly. Use the meeting chat context when relevant. "
+            "If the chat context is not needed or is insufficient, answer as a general assistant. "
+            "Keep the reply short enough for Google Meet chat.\n\n"
+            f"Question:\n{question}\n\n"
+            f"Recent meeting chat:\n{context or '(no prior chat captured)'}"
+        )
+
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Orbit inside a Google Meet chat. Reply concisely, helpfully, "
+                            "and do not claim access to audio or transcript content."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception as error:
+            log(f"Meet chat mention answer failed: {error}", state.session_id)
+            return "I’m here, but I could not generate an answer right now."
+
+        content = response.choices[0].message.content if response.choices else ""
+        return (content or "").strip() or "I’m here."
+
     async def handle_session_finished(self, state):
         try:
             await self.memory.finalize_meeting(state)
@@ -332,13 +383,44 @@ class OrbitWhatsAppService:
             memory_answer = await self.memory.answer_from_memory(question)
         except Exception as error:
             log(f"Memory Q&A failed: {error}")
-            return "I could not answer that right now because the Q&A model call failed."
+            memory_answer = MemoryAnswer("")
 
         answer = memory_answer.answer.strip()
         sources = self.format_memory_sources(memory_answer.sources)
         if sources:
             return f"{answer}\n\nSources: {sources}"
-        return answer or "I do not have enough company memory yet to answer that."
+        if answer and not self.is_insufficient_memory_answer(answer):
+            return answer
+        return await self.answer_general_model_question(question)
+
+    @staticmethod
+    def is_insufficient_memory_answer(answer):
+        normalized = (answer or "").strip().lower()
+        return any(phrase in normalized for phrase in INSUFFICIENT_MEMORY_PHRASES)
+
+    async def answer_general_model_question(self, question):
+        try:
+            response = await self.openai_client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Orbit, a concise WhatsApp assistant. Answer general world, business, "
+                            "and technology questions directly. If the question appears to ask about company "
+                            "or meeting memory and no memory was available, say that you do not have stored "
+                            "company context yet, then answer generally if useful."
+                        ),
+                    },
+                    {"role": "user", "content": question},
+                ],
+            )
+        except Exception as error:
+            log(f"General WhatsApp answer failed: {error}")
+            return "I could not answer that right now because the general model call failed."
+
+        content = response.choices[0].message.content if response.choices else ""
+        return (content or "").strip() or "I could not generate an answer for that."
 
     def format_memory_sources(self, sources: list[MemorySource]):
         labels = []

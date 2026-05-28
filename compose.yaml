@@ -1,0 +1,20 @@
+services:
+  orbit-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: orbit-postgres
+    environment:
+      POSTGRES_USER: orbit
+      POSTGRES_PASSWORD: orbit
+      POSTGRES_DB: orbit
+    ports:
+      - "5432:5432"
+    volumes:
+      - orbit-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbit -d orbit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  orbit-postgres-data:
