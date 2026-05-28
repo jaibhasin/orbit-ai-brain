@@ -14,11 +14,13 @@ from orbit.core import (
 )
 from orbit.meet import build_default_session_config, run_meeting_session
 from orbit.meet_types import (
+    ChatMessage,
     MeetingSessionCallbacks,
     MeetingSessionConfig,
     MeetingState,
     build_meeting_state,
 )
+from orbit.memory import MemorySource, build_memory_service
 from openai import AsyncOpenAI
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
@@ -72,13 +74,14 @@ class OrbitWhatsAppService:
         self.twilio_account_sid = self._require_env("TWILIO_ACCOUNT_SID")
         self.twilio_auth_token = self._require_env("TWILIO_AUTH_TOKEN")
         self.twilio_whatsapp_from = self._require_env("TWILIO_WHATSAPP_FROM")
-        self.twilio_allowed_from = self._require_env("TWILIO_ALLOWED_FROM")
+        self.twilio_allowed_from = self._require_env("TWILIO_ALLOWED_FROM", self._read_env("TWILIO_WHATSAPP_TO"))
         self.openai_api_key = self._require_env("OPENAI_API_KEY")
         self.model_name = self._require_env("OPENAI_MODEL", "gpt-5.4-mini")
         self.max_parallel_meetings = env_int("ORBIT_MAX_PARALLEL_MEETINGS", 3)
 
         self.twilio_client = Client(self.twilio_account_sid, self.twilio_auth_token)
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
+        self.memory = build_memory_service(self.openai_client, self.model_name)
         self.active_sessions: dict[str, ActiveMeeting] = {}
         self.lock = asyncio.Lock()
 
@@ -116,9 +119,8 @@ class OrbitWhatsAppService:
             answer = await self.answer_question(question)
             return format_twiml(answer)
 
-        return format_twiml(
-            "Send a Google Meet link to start Orbit, or send @orbit followed by a question."
-        )
+        answer = await self.answer_general_question(body)
+        return format_twiml(answer)
 
     async def start_meeting_sessions(self, meet_links):
         started = []
@@ -176,6 +178,7 @@ class OrbitWhatsAppService:
     async def _run_session(self, active, config):
         callbacks = MeetingSessionCallbacks(
             on_status=self.handle_session_status,
+            on_chat_message=self.handle_chat_message,
             on_finished=self.handle_session_finished,
         )
         try:
@@ -253,7 +256,18 @@ class OrbitWhatsAppService:
                 f"Orbit hit an error while handling Meet {state.meeting_code}: {detail}"
             )
 
+    async def handle_chat_message(self, state: MeetingState, message: ChatMessage, source: str):
+        try:
+            await self.memory.record_meeting_chat(state, message)
+        except Exception as error:
+            log(f"Memory write failed for Meet {state.meeting_code}: {error}", state.session_id)
+
     async def handle_session_finished(self, state):
+        try:
+            await self.memory.finalize_meeting(state)
+        except Exception as error:
+            log(f"Memory indexing failed for Meet {state.meeting_code}: {error}", state.session_id)
+
         if state.joined_at:
             await self.send_whatsapp_message(
                 f"Orbit finished Meet {state.meeting_code}. Captured {len(state.captured_messages)} chat message(s)."
@@ -312,6 +326,32 @@ class OrbitWhatsAppService:
 
         content = response.choices[0].message.content if response.choices else ""
         return (content or "").strip() or "I do not have enough meeting context to answer that."
+
+    async def answer_general_question(self, question):
+        try:
+            memory_answer = await self.memory.answer_from_memory(question)
+        except Exception as error:
+            log(f"Memory Q&A failed: {error}")
+            return "I could not answer that right now because the Q&A model call failed."
+
+        answer = memory_answer.answer.strip()
+        sources = self.format_memory_sources(memory_answer.sources)
+        if sources:
+            return f"{answer}\n\nSources: {sources}"
+        return answer or "I do not have enough company memory yet to answer that."
+
+    def format_memory_sources(self, sources: list[MemorySource]):
+        labels = []
+        seen = set()
+        for source in sources:
+            label = source.label
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+            if len(labels) >= 3:
+                break
+        return "; ".join(labels)
 
     async def build_meeting_context(self):
         async with self.lock:
