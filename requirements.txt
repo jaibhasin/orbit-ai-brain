@@ -1,2 +1,7 @@
 playwright==1.54.0
 browser-use
+fastapi
+uvicorn
+python-multipart
+twilio
+openai
