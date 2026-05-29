@@ -99,6 +99,7 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
             "what is the launch date?",
         )
 
+        self.assertIn("Answer mode: memory-backed recall", xml)
         self.assertIn("The launch date discussed was Friday.", xml)
         self.assertIn("Sources:", xml)
         self.assertEqual(service.memory.questions, ["what is the launch date?"])
@@ -106,7 +107,10 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_normal_question_falls_back_to_general_answer_when_memory_is_empty(self):
         memory = FakeMemory(
-            MemoryAnswer("I do not have enough company memory yet to answer that.")
+            MemoryAnswer(
+                "I do not have enough company memory yet to answer that.",
+                mode="insufficient_memory",
+            )
         )
         service = build_service(memory)
 
@@ -115,6 +119,8 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
             "what is product market fit?",
         )
 
+        self.assertIn("Answer mode: general fallback", xml)
+        self.assertIn("This answer is not based on stored company memory.", xml)
         self.assertIn("General answer from Orbit.", xml)
         self.assertEqual(memory.questions, ["what is product market fit?"])
         self.assertEqual(len(service.openai_client.chat.completions.calls), 1)

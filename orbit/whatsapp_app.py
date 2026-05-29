@@ -10,9 +10,34 @@ ensure_browser_use_runtime(
     extra_imports=["fastapi", "twilio", "openai", "multipart"],
 )
 
-from fastapi import FastAPI, Form, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Request, Response
+from twilio.request_validator import RequestValidator
 
 from orbit.whatsapp_service import OrbitWhatsAppService
+
+
+class TwiMLResponse(Response):
+    media_type = "application/xml"
+
+
+TWIML_EXAMPLE = """<?xml version="1.0" encoding="UTF-8"?><Response />"""
+TWIML_RESPONSE_DOC = {
+    200: {
+        "description": "Twilio TwiML response",
+        "content": {
+            "application/xml": {
+                "example": TWIML_EXAMPLE,
+            }
+        },
+    }
+}
+
+
+def is_valid_twilio_signature(url, params, signature, auth_token):
+    if not signature or not auth_token:
+        return False
+    validator = RequestValidator(auth_token)
+    return validator.validate(url, params, signature)
 
 
 def normalize_bind_host(raw_host):
@@ -37,16 +62,69 @@ async def lifespan(app):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.post("/api/whatsapp/inbound")
-@app.post("/twilio/whatsapp")
-async def whatsapp_webhook(
+@app.get("/", summary="Orbit webhook status")
+async def root_status():
+    return {
+        "status": "ok",
+        "service": "orbit-whatsapp-webhook",
+        "docs_url": "/docs",
+        "webhook_paths": [
+            "/twilio/whatsapp",
+            "/api/whatsapp/inbound",
+        ],
+    }
+
+
+async def handle_whatsapp_webhook(
     request: Request,
     From: str = Form(""),
     Body: str = Form(""),
 ):
+    form = await request.form()
     service = request.app.state.orbit_service
+    signature = request.headers.get("X-Twilio-Signature", "").strip()
+    if not is_valid_twilio_signature(
+        str(request.url),
+        dict(form),
+        signature,
+        service.twilio_auth_token,
+    ):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
+
     xml_body = await service.handle_incoming_message(From, Body)
-    return Response(content=xml_body, media_type="application/xml")
+    return TwiMLResponse(content=xml_body)
+
+
+@app.post(
+    "/twilio/whatsapp",
+    summary="Twilio WhatsApp inbound webhook",
+    operation_id="twilio_whatsapp_webhook",
+    response_class=TwiMLResponse,
+    response_description="Twilio TwiML response",
+    responses=TWIML_RESPONSE_DOC,
+)
+async def twilio_whatsapp_webhook(
+    request: Request,
+    From: str = Form(""),
+    Body: str = Form(""),
+):
+    return await handle_whatsapp_webhook(request, From=From, Body=Body)
+
+
+@app.post(
+    "/api/whatsapp/inbound",
+    summary="Legacy WhatsApp inbound webhook alias",
+    operation_id="api_whatsapp_inbound_webhook",
+    response_class=TwiMLResponse,
+    response_description="Twilio TwiML response",
+    responses=TWIML_RESPONSE_DOC,
+)
+async def api_whatsapp_inbound_webhook(
+    request: Request,
+    From: str = Form(""),
+    Body: str = Form(""),
+):
+    return await handle_whatsapp_webhook(request, From=From, Body=Body)
 
 
 def main():

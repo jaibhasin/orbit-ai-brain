@@ -20,7 +20,7 @@ from orbit.meet_types import (
     MeetingState,
     build_meeting_state,
 )
-from orbit.memory import MemorySource, build_memory_service
+from orbit.memory import MemoryAnswer, MemorySource, build_memory_service
 from openai import AsyncOpenAI
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
@@ -28,10 +28,11 @@ from twilio.twiml.messaging_response import MessagingResponse
 
 MEET_LINK_PATTERN = re.compile(r"https://meet\.google\.com/[^\s<>\"]+", re.IGNORECASE)
 QNA_TRIGGER_PATTERN = re.compile(r"^\s*(?:@orbit\b|orbit\s*:)\s*", re.IGNORECASE)
-INSUFFICIENT_MEMORY_PHRASES = (
-    "persistent company memory is not configured",
-    "i do not have enough company memory",
-)
+ANSWER_MODE_LABELS = {
+    "memory_answer": "memory-backed recall",
+    "insufficient_memory": "insufficient company memory",
+    "general_fallback": "general fallback",
+}
 
 
 @dataclass
@@ -383,20 +384,27 @@ class OrbitWhatsAppService:
             memory_answer = await self.memory.answer_from_memory(question)
         except Exception as error:
             log(f"Memory Q&A failed: {error}")
-            memory_answer = MemoryAnswer("")
+            memory_answer = MemoryAnswer(
+                "Stored company memory was unavailable for this question.",
+                mode="insufficient_memory",
+            )
 
         answer = memory_answer.answer.strip()
         sources = self.format_memory_sources(memory_answer.sources)
-        if sources:
-            return f"{answer}\n\nSources: {sources}"
-        if answer and not self.is_insufficient_memory_answer(answer):
-            return answer
-        return await self.answer_general_model_question(question)
+        if memory_answer.mode == "memory_answer" and answer:
+            return self.format_answer_mode_message("memory_answer", answer, sources)
 
-    @staticmethod
-    def is_insufficient_memory_answer(answer):
-        normalized = (answer or "").strip().lower()
-        return any(phrase in normalized for phrase in INSUFFICIENT_MEMORY_PHRASES)
+        general_answer = await self.answer_general_model_question(question)
+        fallback_intro = (
+            answer
+            or "Stored company memory did not have enough grounded context for this question."
+        )
+        fallback_body = (
+            f"{fallback_intro}\n\n"
+            "This answer is not based on stored company memory.\n\n"
+            f"{general_answer}"
+        )
+        return self.format_answer_mode_message("general_fallback", fallback_body)
 
     async def answer_general_model_question(self, question):
         try:
@@ -434,6 +442,13 @@ class OrbitWhatsAppService:
             if len(labels) >= 3:
                 break
         return "; ".join(labels)
+
+    def format_answer_mode_message(self, mode: str, answer: str, sources: str = ""):
+        label = ANSWER_MODE_LABELS.get(mode, mode.replace("_", " "))
+        sections = [f"Answer mode: {label}", answer.strip()]
+        if sources:
+            sections.append(f"Sources: {sources}")
+        return "\n\n".join(section for section in sections if section)
 
     async def build_meeting_context(self):
         async with self.lock:

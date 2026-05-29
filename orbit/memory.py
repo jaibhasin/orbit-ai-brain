@@ -34,6 +34,7 @@ class MemorySearchResult:
 class MemoryAnswer:
     answer: str
     sources: list[MemorySource] = field(default_factory=list)
+    mode: str = "memory_answer"
 
 
 class MemoryService(Protocol):
@@ -76,7 +77,8 @@ class DisabledMemoryService:
 
     async def answer_from_memory(self, question: str) -> MemoryAnswer:
         return MemoryAnswer(
-            "Persistent company memory is not configured yet. Set DATABASE_URL to enable memory-backed answers."
+            "Persistent company memory is not configured yet. Set DATABASE_URL to enable memory-backed answers.",
+            mode="insufficient_memory",
         )
 
 

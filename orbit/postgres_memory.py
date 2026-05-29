@@ -410,7 +410,10 @@ class PostgresMemoryService:
     async def answer_from_memory(self, question: str) -> MemoryAnswer:
         results = await self.search_memory(question)
         if not results:
-            return MemoryAnswer("I do not have enough company memory yet to answer that.")
+            return MemoryAnswer(
+                "I do not have enough company memory yet to answer that.",
+                mode="insufficient_memory",
+            )
 
         context = "\n\n".join(
             f"Source {index}: {format_source(result.source)}\n{result.text}"
@@ -438,7 +441,11 @@ class PostgresMemoryService:
         )
         answer = response.choices[0].message.content if response.choices else ""
         answer = (answer or "").strip() or "I do not have enough company memory yet to answer that."
-        return MemoryAnswer(answer=answer, sources=[result.source for result in results])
+        return MemoryAnswer(
+            answer=answer,
+            sources=[result.source for result in results],
+            mode="memory_answer",
+        )
 
     async def _upsert_session(self, cur, state: MeetingState):
         await cur.execute(

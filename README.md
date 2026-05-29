@@ -1,10 +1,10 @@
 # Orbit
 
-**Orbit is an AI layer for company knowledge.**
+**Orbit is a source-backed recall layer for meetings and decisions.**
 
-It joins Google Meets, watches meeting chat, can ingest meeting transcripts, stores organizational memory, and makes that memory queryable through AI agents. The current product surface is a WhatsApp agent backed by FastAPI, browser automation, OpenAI, Groq Whisper-compatible transcription, and an optional Postgres + pgvector memory layer.
+It joins Google Meets, watches meeting chat, can ingest meeting transcripts, stores organizational memory, and makes that memory queryable through AI agents. The current bootstrap control plane is a WhatsApp agent backed by FastAPI, browser automation, OpenAI, Groq Whisper-compatible transcription, and an optional Postgres + pgvector memory layer.
 
-Think of Orbit as an early version of a **queryable company operating system**: agents that can attend workflows, remember what happened, and answer questions from the company context they have actually seen.
+The product thesis is narrower than "a WhatsApp bot": Orbit is trying to answer what was decided, why, and what source evidence backs that answer. WhatsApp is the fastest shell around that workflow today, not the moat.
 
 ## Current Capabilities
 
@@ -21,6 +21,7 @@ Think of Orbit as an early version of a **queryable company operating system**: 
 - Sends WhatsApp status updates while meetings are running.
 - Answers `@orbit ...` WhatsApp questions from live Meet chat context.
 - Answers normal WhatsApp questions from persistent company memory when `DATABASE_URL` is configured.
+- Labels normal WhatsApp answers as memory-backed recall or general fallback so users can tell when Orbit is grounded in stored company context.
 - Stores Meet chat memory in Postgres + pgvector through a swappable memory boundary.
 
 ## Architecture
@@ -125,6 +126,11 @@ what did we last discuss about onboarding?
 ```
 
 Orbit searches persistent company memory, generates an answer from retrieved context, and includes short source labels when available.
+
+Normal WhatsApp answers now expose the answer mode:
+
+- `Answer mode: memory-backed recall` means the response is grounded in stored Orbit memory.
+- `Answer mode: general fallback` means Orbit could not find enough stored company context, so the reply is a general model answer instead.
 
 ## Setup
 
