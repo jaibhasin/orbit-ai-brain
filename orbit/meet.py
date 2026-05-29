@@ -5,7 +5,9 @@ import inspect
 import json
 import os
 import re
+from pathlib import Path
 
+from orbit.caption_attribution import CaptionSnippet
 from orbit.core import (
     CONVERSATION_DIR,
     DEBUG_DIR,
@@ -64,6 +66,26 @@ def build_browser(Browser, session_id=None):
     headless = env_bool("HEADLESS", False)
     use_system_chrome = env_bool("GMEET_USE_SYSTEM_CHROME", False)
     profile_directory = os.environ.get("GMEET_CHROME_PROFILE_DIRECTORY")
+    cdp_url = os.environ.get("ORBIT_CHROME_CDP_URL")
+    extension_path = os.environ.get("ORBIT_CHROME_EXTENSION_PATH", "extension/orbit-audio-capture")
+
+    if cdp_url:
+        log(f"Connecting Browser Use to existing Chrome over CDP: {cdp_url}", session_id)
+        return Browser(
+            cdp_url=cdp_url,
+            keep_alive=True,
+        )
+
+    browser_args = []
+    if Path(extension_path).exists():
+        resolved_extension_path = str(Path(extension_path).resolve())
+        browser_args.extend(
+            [
+                f"--disable-extensions-except={resolved_extension_path}",
+                f"--load-extension={resolved_extension_path}",
+            ]
+        )
+        log(f"Loading Orbit audio capture extension: {resolved_extension_path}", session_id)
 
     if use_system_chrome:
         log("Using Browser Use with your installed Chrome profile.", session_id)
@@ -72,27 +94,34 @@ def build_browser(Browser, session_id=None):
             return Browser.from_system_chrome(
                 profile_directory=profile_directory,
                 keep_alive=True,
+                args=browser_args or None,
             )
-        return Browser.from_system_chrome(keep_alive=True)
+        return Browser.from_system_chrome(keep_alive=True, args=browser_args or None)
 
     log("Using Browser Use managed browser session for guest join flow.", session_id)
     return Browser(
         headless=headless,
         keep_alive=True,
         window_size={"width": 1440, "height": 960},
+        args=browser_args or None,
     )
 
 
 def build_default_session_config(meet_url, session_id=None):
     load_dotenv()
     meeting_code = extract_meeting_code(meet_url)
+    resolved_session_id = session_id or f"manual-{meeting_code}"
+    live_stt_enabled = env_bool("ORBIT_LIVE_STT_ENABLED", bool(os.environ.get("DEEPGRAM_API_KEY")))
+    audio_ws_base_url = os.environ.get("ORBIT_AUDIO_WS_BASE_URL", "ws://127.0.0.1:8000").rstrip("/")
     return MeetingSessionConfig(
-        session_id=session_id or f"manual-{meeting_code}",
+        session_id=resolved_session_id,
         meet_url=meet_url,
         display_name=os.environ.get("GMEET_DISPLAY_NAME", "Orbit Agent"),
         wait_after_join_ms=env_int("GMEET_WAIT_AFTER_JOIN_MS", 120000),
         max_steps=env_int("GMEET_BROWSER_USE_MAX_STEPS", 20),
         model_name=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        live_stt_enabled=live_stt_enabled,
+        audio_stream_ws_url=f"{audio_ws_base_url}/internal/audio-stream/{resolved_session_id}",
     )
 
 
@@ -112,6 +141,11 @@ async def emit_status(callbacks, state, status, detail=None):
 async def emit_chat_message(callbacks, state, message, source):
     if callbacks and callbacks.on_chat_message:
         await maybe_await(callbacks.on_chat_message(state, message, source))
+
+
+async def emit_captions(callbacks, state, captions):
+    if callbacks and callbacks.on_captions:
+        await maybe_await(callbacks.on_captions(state, captions))
 
 
 async def emit_orbit_mention(callbacks, state, message):
@@ -505,6 +539,141 @@ async def send_introduction(page, state):
     return False
 
 
+async def enable_captions(page, session_id=None):
+    result = await evaluate_json(
+        page,
+        """() => {
+            const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+            const isVisible = (node) => {
+                if (!node) return false;
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+            };
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+            const captionsButton = buttons.find((node) => {
+                if (!isVisible(node)) return false;
+                const label = normalize(node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent || '');
+                return (
+                    label.includes('turn on captions') ||
+                    label.includes('show captions') ||
+                    label === 'captions' ||
+                    label.includes('captions off')
+                );
+            });
+            if (!captionsButton) return JSON.stringify({ clicked: false, label: '' });
+            captionsButton.click();
+            return JSON.stringify({
+                clicked: true,
+                label: captionsButton.getAttribute('aria-label') || captionsButton.getAttribute('title') || captionsButton.textContent || ''
+            });
+        }""",
+    )
+    if result and result.get("clicked"):
+        log(f"Requested Meet captions with selector match: {result.get('label')}", session_id)
+        return True
+
+    log("Could not find a visible Meet captions control. Caption attribution will remain disabled.", session_id)
+    return False
+
+
+async def collect_visible_captions(page):
+    payload = await evaluate_json(
+        page,
+        """() => {
+            const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim();
+            const isVisible = (node) => {
+                if (!node) return false;
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+            };
+            const roots = Array.from(document.querySelectorAll(
+                '[aria-live="polite"], [aria-live="assertive"], [role="region"], [data-self-name]'
+            )).filter(isVisible);
+            const snippets = [];
+            const seen = new Set();
+
+            for (const root of roots) {
+                const rawText = normalize(root.innerText || root.textContent || '');
+                if (!rawText || rawText.length < 4) continue;
+                const lines = rawText.split('\\n').map(normalize).filter(Boolean);
+                if (!lines.length) continue;
+
+                let speakerName = '';
+                let text = '';
+                const speakerNode = root.querySelector('[data-self-name], [data-participant-name], [aria-label*="speaker" i]');
+                if (speakerNode) {
+                    speakerName = normalize(speakerNode.textContent || speakerNode.getAttribute('aria-label') || '');
+                    text = normalize(lines.filter((line) => line !== speakerName).join(' '));
+                } else if (lines.length >= 2 && lines[0].length <= 60) {
+                    speakerName = lines[0];
+                    text = normalize(lines.slice(1).join(' '));
+                }
+
+                if (!speakerName || !text || text.length < 4) continue;
+                const key = `${speakerName}|${text}`.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                snippets.push({ speaker_name: speakerName, text });
+            }
+
+            return JSON.stringify(snippets.slice(-10));
+        }""",
+    )
+
+    return [
+        CaptionSnippet(
+            speaker_name=item["speaker_name"],
+            text=item["text"],
+        )
+        for item in payload or []
+        if item.get("speaker_name") and item.get("text")
+    ]
+
+
+async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
+    if not audio_stream_ws_url:
+        return False
+
+    payload = {
+        "source": "orbit",
+        "type": "ORBIT_START_CAPTURE",
+        "sessionId": state.session_id,
+        "meetingId": state.meeting_code,
+        "webSocketUrl": audio_stream_ws_url,
+        "audioFormat": {
+            "encoding": "linear16",
+            "sampleRate": 16000,
+            "channels": 1,
+        },
+    }
+
+    try:
+        await page.evaluate(
+            """(payload) => {
+                window.postMessage(payload, window.location.origin);
+                return true;
+            }""",
+            payload,
+        )
+        state.live_stt_status_detail = "Extension capture start message posted."
+        log("Posted Orbit extension capture start message.", state.session_id)
+    except Exception as error:
+        state.live_stt_status_detail = f"Extension capture start message failed: {error}"
+        log(state.live_stt_status_detail, state.session_id)
+        return False
+
+    shortcut = os.environ.get("ORBIT_EXTENSION_CAPTURE_SHORTCUT", "Alt+Shift+O")
+    try:
+        await page.keyboard.press(shortcut)
+        log(f"Tried Orbit extension activation shortcut: {shortcut}", state.session_id)
+    except Exception as error:
+        log(f"Orbit extension activation shortcut failed: {error}", state.session_id)
+
+    return True
+
+
 def message_mentions_orbit(message):
     return bool(ORBIT_MENTION_PATTERN.search(message.normalized_text))
 
@@ -576,6 +745,7 @@ async def process_messages(page, state, messages, source, callbacks=None):
 
 async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
     state.chat_monitor_started_at = now_iso()
+    seen_caption_fingerprints = set()
 
     chat_open = await open_chat_panel(page, state.session_id)
     state.chat_monitor_available = chat_open
@@ -601,6 +771,20 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
                 await process_messages(page, state, messages, "poll", callbacks)
             except Exception as error:
                 log(f"Chat polling failed: {error}", state.session_id)
+        if state.live_stt_requested:
+            try:
+                captions = await collect_visible_captions(page)
+                new_captions = []
+                for caption in captions:
+                    fingerprint = f"{caption.speaker_name}|{caption.text}".lower()
+                    if fingerprint in seen_caption_fingerprints:
+                        continue
+                    seen_caption_fingerprints.add(fingerprint)
+                    new_captions.append(caption)
+                if new_captions:
+                    await emit_captions(callbacks, state, new_captions)
+            except Exception as error:
+                log(f"Caption scraping failed: {error}", state.session_id)
         await asyncio.sleep(POLL_INTERVAL_MS / 1000)
 
     log(
@@ -683,6 +867,28 @@ async def run_meeting_session(config, callbacks=None, state=None):
             detail = f"Orbit joined the meeting successfully. Monitoring chat for {config.wait_after_join_ms // 1000} seconds."
             await emit_status(callbacks, state, "joined", detail)
             log(detail, state.session_id)
+            if config.live_stt_enabled:
+                state.live_stt_requested = True
+                await enable_captions(page, state.session_id)
+                state.live_stt_available = await trigger_extension_audio_capture(
+                    page,
+                    state,
+                    config.audio_stream_ws_url,
+                )
+                if state.live_stt_available:
+                    await emit_status(
+                        callbacks,
+                        state,
+                        "live_stt_capture_requested",
+                        "Orbit requested tab audio capture through the Chrome extension. Click the in-page Orbit audio button if Chrome requires manual activation.",
+                    )
+                else:
+                    await emit_status(
+                        callbacks,
+                        state,
+                        "live_stt_unavailable",
+                        state.live_stt_status_detail or "Orbit could not trigger tab audio capture.",
+                    )
             await monitor_chat(page, state, config.wait_after_join_ms, callbacks)
         else:
             status = await get_meeting_status(page)

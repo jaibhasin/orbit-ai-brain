@@ -6,3 +6,4 @@ python-multipart
 twilio
 openai
 psycopg[binary]
+websockets

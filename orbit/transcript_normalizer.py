@@ -41,12 +41,15 @@ def normalize_transcript_segments(
                 memory_text=build_memory_text(
                     meeting_code=meeting_code,
                     clean_text=clean_text,
+                    speaker_name=segment.speaker_name,
                     speaker_label=segment.speaker_label,
                     start_ms=segment.start_ms,
                     end_ms=segment.end_ms,
                 ),
                 detected_language=segment.detected_language,
+                speaker_name=segment.speaker_name,
                 speaker_label=segment.speaker_label,
+                speaker_source=segment.speaker_source,
                 speaker_confidence=segment.speaker_confidence,
                 start_ms=segment.start_ms,
                 end_ms=segment.end_ms,
@@ -86,12 +89,15 @@ def normalize_transcript_text(raw_text: str) -> str:
 def build_memory_text(
     meeting_code: str,
     clean_text: str,
+    speaker_name: str | None,
     speaker_label: str | None,
     start_ms: int | None,
     end_ms: int | None,
 ) -> str:
     parts = [f"Meet {meeting_code} transcript"]
-    if speaker_label:
+    if speaker_name:
+        parts.append(speaker_name)
+    elif speaker_label:
         parts.append(speaker_label)
 
     if start_ms is not None:

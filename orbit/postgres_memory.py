@@ -30,6 +30,8 @@ def format_source(source):
         parts.append(f"Meet {source.meeting_code}")
     if source.author:
         parts.append(source.author)
+    elif source.speaker_name:
+        parts.append(source.speaker_name)
     elif source.speaker_label:
         parts.append(source.speaker_label)
     elif source.start_ms is not None:
@@ -111,7 +113,9 @@ class PostgresMemoryService:
                         meeting_code TEXT NOT NULL,
                         source_id TEXT NOT NULL,
                         source_type TEXT NOT NULL,
+                        speaker_name TEXT,
                         speaker_label TEXT,
+                        speaker_source TEXT,
                         speaker_confidence TEXT NOT NULL,
                         detected_language TEXT,
                         start_ms INTEGER,
@@ -125,6 +129,12 @@ class PostgresMemoryService:
                         UNIQUE (session_id, source_id)
                     )
                     """
+                )
+                await cur.execute(
+                    "ALTER TABLE orbit_transcript_segments ADD COLUMN IF NOT EXISTS speaker_name TEXT"
+                )
+                await cur.execute(
+                    "ALTER TABLE orbit_transcript_segments ADD COLUMN IF NOT EXISTS speaker_source TEXT"
                 )
                 await cur.execute(
                     f"""
@@ -202,6 +212,8 @@ class PostgresMemoryService:
                     metadata = dict(segment.metadata)
                     metadata["speaker_confidence"] = segment.speaker_confidence
                     metadata["detected_language"] = segment.detected_language
+                    metadata["speaker_name"] = segment.speaker_name
+                    metadata["speaker_source"] = segment.speaker_source
                     embedding = await self._embed(segment.memory_text)
 
                     await cur.execute(
@@ -211,7 +223,9 @@ class PostgresMemoryService:
                             meeting_code,
                             source_id,
                             source_type,
+                            speaker_name,
                             speaker_label,
+                            speaker_source,
                             speaker_confidence,
                             detected_language,
                             start_ms,
@@ -222,9 +236,11 @@ class PostgresMemoryService:
                             confidence,
                             metadata
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                         ON CONFLICT (session_id, source_id) DO UPDATE SET
+                            speaker_name = EXCLUDED.speaker_name,
                             speaker_label = EXCLUDED.speaker_label,
+                            speaker_source = EXCLUDED.speaker_source,
                             speaker_confidence = EXCLUDED.speaker_confidence,
                             detected_language = EXCLUDED.detected_language,
                             start_ms = EXCLUDED.start_ms,
@@ -240,7 +256,9 @@ class PostgresMemoryService:
                             state.meeting_code,
                             segment.source_id,
                             segment.source_type,
+                            segment.speaker_name,
                             segment.speaker_label,
+                            segment.speaker_source,
                             segment.speaker_confidence,
                             segment.detected_language,
                             segment.start_ms,
@@ -277,6 +295,8 @@ class PostgresMemoryService:
                             json.dumps(
                                 {
                                     "speaker_label": segment.speaker_label,
+                                    "speaker_name": segment.speaker_name,
+                                    "speaker_source": segment.speaker_source,
                                     "speaker_confidence": segment.speaker_confidence,
                                     "detected_language": segment.detected_language,
                                     "start_ms": segment.start_ms,
@@ -390,6 +410,7 @@ class PostgresMemoryService:
                                 meeting_code=row["meeting_code"],
                                 author=metadata.get("author"),
                                 timestamp_text=metadata.get("timestamp_text"),
+                                speaker_name=metadata.get("speaker_name"),
                                 speaker_label=metadata.get("speaker_label"),
                                 start_ms=metadata.get("start_ms"),
                                 end_ms=metadata.get("end_ms"),
@@ -399,6 +420,7 @@ class PostgresMemoryService:
                         meeting_code=row["meeting_code"],
                         author=metadata.get("author"),
                         timestamp_text=metadata.get("timestamp_text"),
+                        speaker_name=metadata.get("speaker_name"),
                         speaker_label=metadata.get("speaker_label"),
                         start_ms=metadata.get("start_ms"),
                         end_ms=metadata.get("end_ms"),

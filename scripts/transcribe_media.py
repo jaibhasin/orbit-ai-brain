@@ -31,7 +31,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", help="Optional ISO-639-1 language hint for Groq Whisper.")
     parser.add_argument(
         "--speaker-names",
-        help="Comma-separated known speaker names. Best effort only; do not expect exact attribution.",
+        help=(
+            "Comma-separated known speaker names. Groq Whisper has no diarization; "
+            "these names are added to the transcription prompt as hints only."
+        ),
     )
     parser.add_argument("--prompt", help="Optional spelling/context hint for transcription.")
     parser.add_argument(

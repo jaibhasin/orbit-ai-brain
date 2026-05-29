@@ -7,10 +7,10 @@ from orbit.core import ensure_browser_use_runtime, env_int, load_dotenv
 
 ensure_browser_use_runtime(
     "scripts/whatsapp_bot.py",
-    extra_imports=["fastapi", "twilio", "openai", "multipart"],
+    extra_imports=["fastapi", "twilio", "openai", "multipart", "websockets"],
 )
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Request, Response, WebSocket
 from twilio.request_validator import RequestValidator
 
 from orbit.whatsapp_service import OrbitWhatsAppService
@@ -72,7 +72,14 @@ async def root_status():
             "/twilio/whatsapp",
             "/api/whatsapp/inbound",
         ],
+        "audio_stream_path": "/internal/audio-stream/{session_id}",
     }
+
+
+@app.websocket("/internal/audio-stream/{session_id}")
+async def live_audio_stream(websocket: WebSocket, session_id: str):
+    service = websocket.app.state.orbit_service
+    await service.handle_audio_stream(websocket, session_id)
 
 
 async def handle_whatsapp_webhook(

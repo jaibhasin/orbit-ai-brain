@@ -36,16 +36,21 @@ class GroqTranscriber:
         prompt: str | None = None,
         known_speaker_names: list[str] | None = None,
     ) -> list[TranscriptSegment]:
+        # Groq Whisper does not accept OpenAI's known_speaker_names parameter.
+        transcription_prompt = _build_transcription_prompt(
+            prompt=prompt,
+            known_speaker_names=known_speaker_names,
+        )
+
         with media_path.open("rb") as audio_file:
             response = await self.client.audio.transcriptions.create(
                 file=audio_file,
                 model=self.model,
                 language=language or None,
-                prompt=prompt or None,
+                prompt=transcription_prompt,
                 response_format="verbose_json",
                 temperature=0.0,
                 timestamp_granularities=["segment"],
-                known_speaker_names=known_speaker_names or None,
             )
 
         payload = _model_dump(response)
@@ -93,6 +98,29 @@ class GroqTranscriber:
             )
 
         return transcript_segments
+
+
+def _build_transcription_prompt(
+    *,
+    prompt: str | None,
+    known_speaker_names: list[str] | None,
+) -> str | None:
+    parts: list[str] = []
+    if prompt and prompt.strip():
+        parts.append(prompt.strip())
+
+    if known_speaker_names:
+        names = ", ".join(name.strip() for name in known_speaker_names if name.strip())
+        if names:
+            parts.append(
+                "Possible speakers in this meeting include: "
+                f"{names}. Use these names only when clearly supported by the audio."
+            )
+
+    if not parts:
+        return None
+
+    return " ".join(parts)
 
 
 def _seconds_to_ms(value) -> int | None:

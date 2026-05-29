@@ -38,6 +38,10 @@ class MeetingState:
     browser_use_success: bool = False
     browser_use_had_errors: bool = False
     chat_monitor_available: bool = False
+    live_stt_requested: bool = False
+    live_stt_available: bool = False
+    live_stt_started: bool = False
+    live_stt_status_detail: str | None = None
     seen_message_fingerprints: set[str] = field(default_factory=set)
     captured_messages: list[ChatMessage] = field(default_factory=list)
     pending_speak_permissions: int = 0
@@ -54,12 +58,15 @@ class MeetingSessionConfig:
     wait_after_join_ms: int
     max_steps: int
     model_name: str
+    live_stt_enabled: bool = False
+    audio_stream_ws_url: str | None = None
 
 
 @dataclass
 class MeetingSessionCallbacks:
     on_status: Callable[[MeetingState, str, str | None], Any] | None = None
     on_chat_message: Callable[[MeetingState, ChatMessage, str], Any] | None = None
+    on_captions: Callable[[MeetingState, list[Any]], Any] | None = None
     on_orbit_mention: Callable[[MeetingState, ChatMessage], Any] | None = None
     on_finished: Callable[[MeetingState], Any] | None = None
 

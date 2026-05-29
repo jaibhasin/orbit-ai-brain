@@ -21,7 +21,9 @@ class TranscriptSegment:
     clean_text: str
     memory_text: str
     detected_language: str | None = None
+    speaker_name: str | None = None
     speaker_label: str | None = None
+    speaker_source: str | None = None
     speaker_confidence: str = "unknown"
     start_ms: int | None = None
     end_ms: int | None = None

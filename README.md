@@ -256,6 +256,14 @@ what did we discuss about hiring?
 
 Answers from persistent company memory.
 
+Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
+
+```bash
+.venv-browser-use/bin/python scripts/stream_monitor_audio.py \
+  ws://127.0.0.1:8000/internal/audio-stream/<session-id> \
+  --source default
+```
+
 ## Configuration
 
 | Variable | Purpose |
@@ -263,6 +271,13 @@ Answers from persistent company memory.
 | `OPENAI_API_KEY` | OpenAI API key for chat and embeddings |
 | `OPENAI_MODEL` | Chat model used by Orbit |
 | `OPENAI_EMBEDDING_MODEL` | Embedding model for memory search |
+| `DEEPGRAM_API_KEY` | Deepgram API key for live STT; backend only, never stored in the extension |
+| `DEEPGRAM_LIVE_MODEL` | Deepgram live STT model, default `nova-3` |
+| `ORBIT_LIVE_STT_ENABLED` | Enable live Meet audio transcription, defaults on when `DEEPGRAM_API_KEY` is set |
+| `ORBIT_AUDIO_WS_BASE_URL` | Local WebSocket base URL for extension audio, default `ws://127.0.0.1:8000` |
+| `ORBIT_CHROME_EXTENSION_PATH` | Unpacked MV3 extension path, default `extension/orbit-audio-capture` |
+| `ORBIT_CHROME_CDP_URL` | Existing headed Chrome CDP URL for browser-use to connect to |
+| `ORBIT_EXTENSION_CAPTURE_SHORTCUT` | Shortcut used to activate extension capture, default `Alt+Shift+O` |
 | `GROQ_API_KEY` | Groq API key for transcript import |
 | `GROQ_TRANSCRIPTION_MODEL` | Groq speech-to-text model, default `whisper-large-v3-turbo` |
 | `DATABASE_URL` | Enables Postgres + pgvector memory |
@@ -305,8 +320,10 @@ Compile-check the core modules:
 
 ## Current Limits
 
-- Orbit reads Google Meet chat live. Audio transcription currently happens through offline media import, not live system-audio capture.
-- Speaker attribution for imported transcripts is best effort only unless a separate caption or participant signal is available.
+- Orbit reads Google Meet chat live and can request live audio transcription through the local Chrome extension.
+- The primary live STT path is headed Chrome under a virtual display, browser-use over CDP, extension tab audio capture, and backend-owned Deepgram streaming.
+- PulseAudio/PipeWire monitor capture is a fallback/debug path, not the primary architecture.
+- Speaker attribution is best effort. Google Meet caption scraping can enrich speaker names, but selectors are unstable and failures do not block Deepgram transcript storage.
 - Persistent memory indexes both captured Meet chat and imported transcript segments.
 - Slack, email, document ingestion, dashboards, multi-company tenancy, and auth are future layers.
 - Google Meet UI changes may require selector updates.

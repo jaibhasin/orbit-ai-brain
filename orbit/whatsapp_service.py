@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +22,7 @@ from orbit.meet_types import (
     build_meeting_state,
 )
 from orbit.memory import MemoryAnswer, MemorySource, build_memory_service
+from orbit.live_stt import LiveAudioFormat, LiveSTTManager
 from openai import AsyncOpenAI
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
@@ -87,6 +89,11 @@ class OrbitWhatsAppService:
         self.twilio_client = Client(self.twilio_account_sid, self.twilio_auth_token)
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
         self.memory = build_memory_service(self.openai_client, self.model_name)
+        self.live_stt = LiveSTTManager(
+            memory=self.memory,
+            api_key=self._read_env("DEEPGRAM_API_KEY"),
+            model=self._read_env("DEEPGRAM_LIVE_MODEL", "nova-3"),
+        )
         self.active_sessions: dict[str, ActiveMeeting] = {}
         self.lock = asyncio.Lock()
 
@@ -184,6 +191,7 @@ class OrbitWhatsAppService:
         callbacks = MeetingSessionCallbacks(
             on_status=self.handle_session_status,
             on_chat_message=self.handle_chat_message,
+            on_captions=self.handle_captions,
             on_orbit_mention=self.handle_orbit_mention,
             on_finished=self.handle_session_finished,
         )
@@ -206,6 +214,8 @@ class OrbitWhatsAppService:
             wait_after_join_ms=default_config.wait_after_join_ms,
             max_steps=default_config.max_steps,
             model_name=default_config.model_name,
+            live_stt_enabled=default_config.live_stt_enabled,
+            audio_stream_ws_url=default_config.audio_stream_ws_url,
         )
 
     async def handle_session_status(self, state, status, detail):
@@ -224,6 +234,18 @@ class OrbitWhatsAppService:
         if status == "joined":
             await self.send_whatsapp_message(
                 f"Orbit joined Meet {state.meeting_code} and is monitoring the meeting chat."
+            )
+            return
+
+        if status == "live_stt_capture_requested":
+            await self.send_whatsapp_message(
+                f"Orbit requested live audio transcription for Meet {state.meeting_code}."
+            )
+            return
+
+        if status == "live_stt_unavailable":
+            await self.send_whatsapp_message(
+                f"Orbit could not start live audio transcription for Meet {state.meeting_code}: {detail}"
             )
             return
 
@@ -267,6 +289,12 @@ class OrbitWhatsAppService:
             await self.memory.record_meeting_chat(state, message)
         except Exception as error:
             log(f"Memory write failed for Meet {state.meeting_code}: {error}", state.session_id)
+
+    async def handle_captions(self, state: MeetingState, captions):
+        try:
+            await self.live_stt.add_captions(state, captions)
+        except Exception as error:
+            log(f"Caption attribution buffer failed for Meet {state.meeting_code}: {error}", state.session_id)
 
     async def handle_orbit_mention(self, state: MeetingState, message: ChatMessage):
         question = strip_qna_trigger(message.normalized_text)
@@ -315,6 +343,7 @@ class OrbitWhatsAppService:
         return (content or "").strip() or "I’m here."
 
     async def handle_session_finished(self, state):
+        await self.live_stt.stop(state.session_id)
         try:
             await self.memory.finalize_meeting(state)
         except Exception as error:
@@ -471,3 +500,43 @@ class OrbitWhatsAppService:
             )
 
         return "\n\n".join(sections)
+
+    async def handle_audio_stream(self, websocket, session_id: str):
+        active = self.active_sessions.get(session_id)
+        if active is None:
+            await websocket.close(code=4404, reason="Unknown Orbit meeting session.")
+            return
+        if not self.live_stt.available:
+            await websocket.close(code=4401, reason="Missing DEEPGRAM_API_KEY.")
+            return
+
+        await websocket.accept()
+        session = None
+        try:
+            while True:
+                message = await websocket.receive()
+                if message.get("bytes") is not None:
+                    if session is None:
+                        session = await self.live_stt.get_or_create(active.state)
+                        active.state.live_stt_started = True
+                    await session.send_audio(message["bytes"])
+                    continue
+
+                raw_text = message.get("text")
+                if raw_text is None:
+                    continue
+
+                payload = json.loads(raw_text)
+                message_type = payload.get("type")
+                if message_type in {"start", "config"}:
+                    audio_format = LiveAudioFormat.from_payload(payload)
+                    session = await self.live_stt.get_or_create(active.state, audio_format)
+                    active.state.live_stt_started = True
+                    active.state.live_stt_status_detail = "Extension audio WebSocket connected."
+                    await websocket.send_json({"type": "ready"})
+                elif message_type == "stop":
+                    break
+        except Exception as error:
+            log(f"Live audio WebSocket failed for Meet {active.state.meeting_code}: {error}", session_id)
+        finally:
+            await self.live_stt.stop(session_id)

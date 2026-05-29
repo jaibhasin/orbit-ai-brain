@@ -5,7 +5,7 @@ import unittest
 
 from orbit.meet_types import ChatMessage, MeetingState
 from orbit.memory import MemoryAnswer, MemorySource
-from orbit.whatsapp_service import OrbitWhatsAppService
+from orbit.whatsapp_service import ActiveMeeting, OrbitWhatsAppService
 
 
 class FakeMemory:
@@ -78,6 +78,55 @@ class FakeOpenAIClient:
         self.chat = FakeChat()
 
 
+class FakeLiveSTT:
+    def __init__(self):
+        self.available = True
+        self.sessions = []
+        self.stopped = []
+
+    async def add_captions(self, state, captions):
+        return None
+
+    async def get_or_create(self, state, audio_format=None):
+        session = FakeLiveSTTSession()
+        self.sessions.append((state, audio_format, session))
+        return session
+
+    async def stop(self, session_id):
+        self.stopped.append(session_id)
+        return None
+
+
+class FakeLiveSTTSession:
+    def __init__(self):
+        self.audio_chunks = []
+
+    async def send_audio(self, chunk):
+        self.audio_chunks.append(chunk)
+
+
+class FakeWebSocket:
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.accepted = False
+        self.sent_json = []
+        self.closed = None
+
+    async def accept(self):
+        self.accepted = True
+
+    async def close(self, code=1000, reason=""):
+        self.closed = (code, reason)
+
+    async def receive(self):
+        if not self.messages:
+            raise RuntimeError("no more messages")
+        return self.messages.pop(0)
+
+    async def send_json(self, payload):
+        self.sent_json.append(payload)
+
+
 def build_service(memory=None):
     service = OrbitWhatsAppService.__new__(OrbitWhatsAppService)
     service.twilio_allowed_from = "whatsapp:+15551234567"
@@ -87,6 +136,7 @@ def build_service(memory=None):
     service.active_sessions = {}
     service.lock = asyncio.Lock()
     service.memory = memory or FakeMemory()
+    service.live_stt = FakeLiveSTT()
     return service
 
 
@@ -193,6 +243,43 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         call = service.openai_client.chat.completions.calls[0]
         self.assertIn("are you there?", call["messages"][1]["content"])
         self.assertIn("we are discussing pricing", call["messages"][1]["content"])
+
+    async def test_extension_audio_stream_forwards_chunks_to_live_stt(self):
+        service = build_service()
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+        )
+        service.active_sessions[state.session_id] = ActiveMeeting(
+            session_id=state.session_id,
+            meet_url=state.meet_url,
+            state=state,
+        )
+        websocket = FakeWebSocket(
+            [
+                {"text": '{"type":"start","encoding":"linear16","sample_rate":16000,"channels":1}'},
+                {"bytes": b"pcm"},
+                {"text": '{"type":"stop"}'},
+            ]
+        )
+
+        await service.handle_audio_stream(websocket, state.session_id)
+
+        self.assertTrue(websocket.accepted)
+        self.assertEqual(websocket.sent_json, [{"type": "ready"}])
+        fake_session = service.live_stt.sessions[0][2]
+        self.assertEqual(fake_session.audio_chunks, [b"pcm"])
+        self.assertEqual(service.live_stt.stopped, [state.session_id])
+
+    async def test_extension_missing_unknown_session_closes_websocket(self):
+        service = build_service()
+        websocket = FakeWebSocket([])
+
+        await service.handle_audio_stream(websocket, "missing")
+
+        self.assertEqual(websocket.closed[0], 4404)
 
 
 if __name__ == "__main__":

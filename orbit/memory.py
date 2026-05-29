@@ -18,6 +18,7 @@ class MemorySource:
     meeting_code: str | None = None
     author: str | None = None
     timestamp_text: str | None = None
+    speaker_name: str | None = None
     speaker_label: str | None = None
     start_ms: int | None = None
     end_ms: int | None = None
