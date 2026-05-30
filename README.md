@@ -2,7 +2,7 @@
 
 **Orbit is a source-backed recall layer for meetings and decisions.**
 
-It joins Google Meets, watches meeting chat, captures live meeting transcripts, stores organizational memory, and makes that memory queryable through AI agents. The current bootstrap control plane is a WhatsApp agent backed by FastAPI, browser automation, OpenAI, Deepgram live STT, and an optional Postgres + pgvector memory layer.
+It joins Google Meets, watches meeting chat, captures live meeting transcripts, stores organizational memory, and makes that memory queryable through AI agents. The current bootstrap control plane is a WhatsApp agent backed by FastAPI, browser automation, OpenAI, Deepgram live STT, and an optional Postgres-backed storage layer.
 
 The product thesis is narrower than "a WhatsApp bot": Orbit is trying to answer what was decided, why, and what source evidence backs that answer. WhatsApp is the fastest shell around that workflow today, not the moat.
 
@@ -16,7 +16,7 @@ The product thesis is narrower than "a WhatsApp bot": Orbit is trying to answer 
 - Captures visible Meet chat messages during the session.
 - Captures Google Meet tab audio through a local Manifest V3 Chrome extension.
 - Streams live audio to the Orbit backend, then forwards it to Deepgram for STT.
-- Normalizes final transcript segments before writing them into persistent memory.
+- Normalizes final transcript segments before writing them into persistent storage.
 - Uses Google Meet captions as a best-effort speaker attribution layer when available.
 - Detects `@orbit` mentions inside Meet chat.
 - Starts meetings from WhatsApp via Twilio.
@@ -25,7 +25,7 @@ The product thesis is narrower than "a WhatsApp bot": Orbit is trying to answer 
 - Answers live meeting recall questions from active Deepgram transcript segments when live STT is running.
 - Answers normal WhatsApp questions from persistent company memory when `DATABASE_URL` is configured.
 - Labels normal WhatsApp answers as memory-backed recall or general fallback so users can tell when Orbit is grounded in stored company context.
-- Stores Meet chat memory in Postgres + pgvector through a swappable memory boundary.
+- Stores meeting source/metadata/transcript chunks/extraction outputs through Postgres tables.
 
 ## Architecture
 
@@ -53,16 +53,16 @@ OrbitWhatsAppService
       |                 v
       |           Deepgram live STT
       |
-      +--> MemoryService interface
+      +--> MeetingStore interface
               |
               v
-        Postgres + pgvector
+        Postgres (people, sources, meetings, source_chunks, extraction_runs, decisions, action_items, memories)
               |
               v
-        OpenAI embeddings + RAG answers
+        extraction + structured memory persistence + optional RAG path
 ```
 
-The important design choice is that memory is behind `orbit/memory.py`. The current Postgres schema is intentionally v1 and replaceable. If memory organization changes later, the rest of the system should not need to know about table shapes, vector SQL, chunking, or ranking internals.
+The important design choice is that meeting persistence is centralized in `orbit/meeting_store.py`. Chat and legacy vector memory remain in the existing memory path, while meeting artifacts now use a v1 persistence schema for auditability and structured extraction.
 
 ## Repository Map
 
@@ -83,6 +83,7 @@ orbit/
   meet_types.py         Meeting/session/chat dataclasses
   whatsapp_app.py       FastAPI app and Twilio webhook route
   whatsapp_service.py   WhatsApp orchestration and agent behavior
+  meeting_store.py      Postgres persistence for people/sources/meetings/source_chunks/extraction_runs/decisions/action_items/memories
   memory.py             Swappable memory service interface
   postgres_memory.py    Postgres + pgvector memory implementation
   transcript.py         Transcript segment dataclass
@@ -219,42 +220,100 @@ DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
 
 `DATABASE_URL` is optional. If it is missing, Orbit still runs, but persistent company-memory Q&A is disabled.
 
-## Postgres Memory
+## Postgres Persistence
 
-Persistent memory requires Postgres with the `vector` extension available.
-
-For local development, start the included pgvector database:
-
-```bash
-docker compose up -d orbit-postgres
-```
-
-Then set this in `.env` and restart the WhatsApp agent:
+Requires a Postgres connection in `.env`:
 
 ```text
 DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
 ```
 
-Orbit creates or migrates its private memory tables automatically on first memory use:
+Orbit creates all required tables automatically from `meeting_store` schema:
 
-- `orbit_private.orbit_meet_sessions`
-- `orbit_private.orbit_chat_messages`
-- `orbit_private.orbit_transcript_segments`
-- `orbit_private.orbit_memory_chunks`
+```sql
+people(
+  id uuid primary key default gen_random_uuid(),
+  name text, phone text, email text, created_at timestamptz not null
+)
 
-The schema stores meeting/session metadata, raw and normalized chat text, raw and normalized transcript text, searchable memory text, and vector embeddings. Text rows commit before embedding calls, so a temporary embedding failure leaves inspectable text queued for reindexing instead of losing the transcript. Retrieval is scoped by `ORBIT_ORGANIZATION_ID`, filters out low-similarity matches, and only compares embeddings created by the configured model.
+sources(
+  id uuid primary key default gen_random_uuid(),
+  source_type text not null,
+  url text, title text, raw_text text, raw_payload jsonb, created_at timestamptz not null
+)
 
-Apply the migration explicitly and inspect stored text:
+meetings(
+  id uuid primary key default gen_random_uuid(),
+  source_id uuid references sources(id) on delete cascade,
+  gmeet_url text not null, status text not null,
+  requested_by_person_id uuid references people(id),
+  started_at timestamptz, ended_at timestamptz,
+  summary_short text, summary_long text,
+  created_at timestamptz not null, updated_at timestamptz not null
+)
 
-```bash
-python scripts/migrate_memory.py
-python scripts/audit_memory.py --show-text
+source_chunks(
+  id uuid primary key default gen_random_uuid(),
+  source_id uuid not null references sources(id) on delete cascade,
+  chunk_index integer not null,
+  speaker_label text, speaker_person_id uuid references people(id),
+  start_ms integer, end_ms integer,
+  text text not null, metadata jsonb,
+  created_at timestamptz not null
+)
+
+extraction_runs(
+  id uuid primary key default gen_random_uuid(),
+  source_id uuid references sources(id) on delete cascade,
+  meeting_id uuid references meetings(id) on delete cascade,
+  run_type text not null,
+  model text, prompt_version text,
+  output_json jsonb, status text default 'success',
+  error text, created_at timestamptz not null
+)
+
+decisions(
+  id uuid primary key default gen_random_uuid(),
+  meeting_id uuid references meetings(id) on delete cascade,
+  source_id uuid references sources(id) on delete cascade,
+  title text, decision_text text not null,
+  rationale text, owner_text text,
+  confidence numeric, created_at timestamptz not null
+)
+
+action_items(
+  id uuid primary key default gen_random_uuid(),
+  meeting_id uuid references meetings(id) on delete cascade,
+  source_id uuid references sources(id) on delete cascade,
+  task text not null, owner_text text,
+  due_date text, status text not null default 'open',
+  confidence numeric, created_at timestamptz not null
+)
+
+memories(
+  id uuid primary key default gen_random_uuid(),
+  meeting_id uuid references meetings(id) on delete cascade,
+  source_id uuid references sources(id) on delete cascade,
+  memory_type text not null, content text not null,
+  importance text not null default 'medium', confidence numeric,
+  created_at timestamptz not null
+)
 ```
 
-Retry pending, failed, or outdated-model embeddings without replaying a meeting:
+Meeting lifecycle writes:
+
+1. incoming WhatsApp link creates/updates rows in `people`, `sources`, and `meetings`
+2. capture/save final transcript into `source_chunks`
+3. extraction runs save structured JSON into `extraction_runs.output_json`
+4. extracted arrays are persisted into `decisions`, `action_items`, and `memories`
+
+Developer helpers:
 
 ```bash
-python scripts/reindex_memory.py
+python scripts/test_meeting_extraction.py --meeting-id <MEETING_ID>
+python scripts/test_meeting_extraction.py --meeting-id <MEETING_ID> --persist-decisions
+python scripts/test_meeting_extraction.py --meeting-id <MEETING_ID> --persist-action-items
+python scripts/test_meeting_extraction.py --meeting-id <MEETING_ID> --persist-memories
 ```
 
 ## Run
@@ -364,7 +423,7 @@ Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
 | `ORBIT_CHROME_EXTENSION_PATH` | Unpacked MV3 extension path, default `extension/orbit-audio-capture` |
 | `ORBIT_CHROME_CDP_URL` | Existing headed Chrome CDP URL for browser-use to connect to |
 | `ORBIT_EXTENSION_CAPTURE_SHORTCUT` | Shortcut used to activate extension capture, default `Alt+Shift+O` |
-| `DATABASE_URL` | Enables Postgres + pgvector memory |
+| `DATABASE_URL` | Enables meeting persistence + memory features |
 | `TWILIO_ACCOUNT_SID` | Twilio account SID |
 | `TWILIO_AUTH_TOKEN` | Twilio auth token |
 | `TWILIO_WHATSAPP_FROM` | Twilio WhatsApp sender |
@@ -400,6 +459,7 @@ Compile-check the core modules:
   orbit/meet_types.py \
   orbit/memory.py \
   orbit/postgres_memory.py \
+  orbit/meeting_store.py \
   orbit/whatsapp_app.py \
   orbit/whatsapp_service.py \
   orbit/caption_attribution.py \
@@ -416,7 +476,7 @@ Compile-check the core modules:
 - With `ORBIT_CHROME_CDP_URL` or `GMEET_USE_SYSTEM_CHROME=true`, load the unpacked extension manually from `chrome://extensions`. Official Chrome 137+ no longer loads unpacked extensions from command-line flags.
 - PulseAudio/PipeWire monitor capture is a fallback/debug path, not the primary architecture.
 - Speaker attribution is best effort. Google Meet caption scraping can enrich speaker names, but selectors are unstable and failures do not block Deepgram transcript storage.
-- Persistent memory indexes both captured Meet chat and final live transcript segments.
+- Meeting persistence now indexes raw transcript chunks and extraction artifacts before optional downstream vector indexing.
 - Slack, email, document ingestion, dashboards, multi-company tenancy, and auth are future layers.
 - Google Meet UI changes may require selector updates.
 - Orbit does not bypass Google Meet, WhatsApp, or company access controls.

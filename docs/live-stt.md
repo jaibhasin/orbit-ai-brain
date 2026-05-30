@@ -103,18 +103,17 @@ Orbit sends the same format values to Deepgram for the live stream. If Chrome ch
 
 ## Stored Transcript Fields
 
-Final transcript segments are normalized and stored with nullable speaker fields:
+Final transcript segments are normalized and stored as transcript chunks with nullable speaker metadata:
 
+- `source_id` (from `sources.id`)
+- `chunk_index` (ordered by capture position)
 - `text`
-- `start_time`
-- `end_time`
-- `speaker_name`
+- `start_ms`
+- `end_ms`
 - `speaker_label`
-- `speaker_source`
-- `speaker_confidence`
-- `meeting_id`
+- `metadata` (raw JSON payload with optional confidence/attribution)
 
-In code, these map through `TranscriptSegment` fields and the Postgres memory tables.
+In code, these map through `TranscriptSegment` fields and are persisted into `source_chunks`.
 
 ## Speaker Attribution
 

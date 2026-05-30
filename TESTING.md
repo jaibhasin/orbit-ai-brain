@@ -30,6 +30,13 @@ Run one test module while iterating:
 python -m unittest tests.test_meet_chat
 ```
 
+Run persistence-focused extraction and storage checks:
+
+```bash
+python -m unittest tests.test_meeting_store -v
+python -m unittest tests.test_whatsapp_memory.WhatsAppMemoryTests.test_run_meeting_extraction_success tests.test_whatsapp_memory.WhatsAppMemoryTests.test_run_meeting_extraction_persists_decisions tests.test_whatsapp_memory.WhatsAppMemoryTests.test_run_meeting_extraction_persists_action_items tests.test_whatsapp_memory.WhatsAppMemoryTests.test_run_meeting_extraction_persists_memories -v
+```
+
 ## Run CI Checks Locally
 
 ```bash
@@ -48,7 +55,7 @@ python -m json.tool extension/orbit-audio-capture/manifest.json >/dev/null
 
 - Unit tests live in `tests/test_*.py` and cover transcript parsing, normalization, caption attribution, configuration helpers, and chat behavior.
 - Integration-style tests exercise the extension audio WebSocket handler with fake WebSocket and STT services.
-- Postgres memory unit tests verify text-first persistence, deferred embedding failures, organization-scoped retrieval, and private-schema migration SQL.
+- Meeting persistence unit tests verify table contracts, chunk ordering, extraction-run writes, and idempotent decisions/action_items/memories persistence.
 - Chrome extension files receive syntax, behavior, and manifest validation in CI.
 - A real headed-Chrome smoke test is still required for `chrome.tabCapture`, Google Meet DOM behavior, and live Deepgram streaming.
 
