@@ -102,6 +102,7 @@ class FakeMeetingStore:
         self.transcript_save_calls = []
         self.fail_save_chunks = False
         self.extraction_runs = []
+        self.decisions = []
         self.source_chunks_for_id = {}
         self.meetings_lookup = {}
 
@@ -216,6 +217,111 @@ class FakeMeetingStore:
             status=payload.get("status"),
             error=payload.get("error"),
         )
+
+    async def create_decision(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        title=None,
+        decision_text=None,
+        rationale=None,
+        owner_text=None,
+        confidence=None,
+    ):
+        if not meeting_id or not source_id:
+            return None
+
+        if not decision_text:
+            return None
+
+        decision_id = f"decision-{len(self.decisions) + 1}"
+        self.decisions.append(
+            {
+                "id": decision_id,
+                "meeting_id": meeting_id,
+                "source_id": source_id,
+                "title": title,
+                "decision_text": decision_text,
+                "rationale": rationale,
+                "owner_text": owner_text,
+                "confidence": confidence,
+            }
+        )
+        return decision_id
+
+    async def createDecision(self, payload):
+        return await self.create_decision(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            title=payload.get("title"),
+            decision_text=payload.get("decisionText") or payload.get("decision_text"),
+            rationale=payload.get("rationale"),
+            owner_text=payload.get("ownerText") or payload.get("owner_text"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createDecisionsFromExtraction(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        decisions=None,
+    ):
+        # Idempotent behavior expected by extraction flow.
+        self.decisions = [
+            decision
+            for decision in self.decisions
+            if decision.get("meeting_id") != meeting_id
+        ]
+
+        if not isinstance(decisions, list):
+            return 0
+
+        inserted = 0
+        for decision in decisions:
+            decision_text = (
+                (decision.get("decisionText") or "").strip()
+                if isinstance(decision, dict)
+                else ""
+            )
+            if not decision_text:
+                decision_text = (
+                    (decision.get("decision_text") or "").strip()
+                    if isinstance(decision, dict)
+                    else ""
+                )
+            if not decision_text:
+                continue
+
+            await self.create_decision(
+                meeting_id=meeting_id,
+                source_id=source_id,
+                title=(decision.get("title") or "").strip() if isinstance(decision, dict) else None,
+                decision_text=decision_text,
+                rationale=(decision.get("rationale") or "").strip()
+                if isinstance(decision, dict) and decision.get("rationale") is not None
+                else None,
+                owner_text=(decision.get("ownerText") or decision.get("owner_text") or "").strip()
+                if isinstance(decision, dict) and (decision.get("ownerText") or decision.get("owner_text")) is not None
+                else None,
+                confidence=decision.get("confidence") if isinstance(decision, dict) else None,
+            )
+            inserted += 1
+
+        return inserted
+
+    async def get_decisions_by_meeting_id(self, meeting_id):
+        return [decision for decision in self.decisions if decision.get("meeting_id") == meeting_id]
+
+    async def getDecisionsByMeetingId(self, meeting_id):
+        return await self.get_decisions_by_meeting_id(meeting_id)
+
+    async def get_recent_decisions(self, limit=20):
+        return list(reversed(self.decisions))[:limit]
+
+    async def getRecentDecisions(self, limit=20):
+        return await self.get_recent_decisions(limit=limit)
 
     async def get_meeting_by_id(self, meeting_id):
         meeting = self.meetings_lookup.get(meeting_id)
@@ -466,6 +572,46 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fields["ended_at"], "2026-05-31T11:00:00")
         self.assertEqual(fields["started_at"], "2026-05-31T10:00:00")
         self.assertIn("chat messages captured", fields["summary_short"])
+
+    async def test_run_meeting_extraction_persists_decisions(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "text": "Payments are still failing.",
+                },
+            ]
+        }
+        service = build_service(
+            memory=FakeMemory(),
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Launch update","summary_long":"Aman said launch and Ravi reported payments issue.","decisions":[{"title":"Delay launch","decision_text":"The team decided to delay launch by one week.","rationale":"Payments are still failing.","owner_text":"Engineering","confidence":0.86},{"title":"Invalid","owner_text":"PM"}],"action_items":[],"risks":[],"open_questions":[],"durable_memories":[]}'
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result.get("decisions_inserted"), 1)
+        self.assertEqual(len(store.decisions), 1)
+        self.assertEqual(store.decisions[0]["title"], "Delay launch")
+        self.assertEqual(store.decisions[0]["decision_text"], "The team decided to delay launch by one week.")
+        self.assertEqual(store.decisions[0]["owner_text"], "Engineering")
+        self.assertEqual(store.decisions[0]["confidence"], 0.86)
 
     async def test_run_meeting_extraction_success(self):
         store = FakeMeetingStore()

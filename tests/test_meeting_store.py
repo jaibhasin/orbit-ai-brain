@@ -130,7 +130,9 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS meetings", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS source_chunks", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS extraction_runs", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS decisions", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE INDEX IF NOT EXISTS idx_decisions_meeting_id", MEETING_SCHEMA_SQL)
 
     async def test_save_source_chunks_inserts_text_with_order_and_metadata(self):
         cursor = FakeCursor()
@@ -243,6 +245,78 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INSERT INTO extraction_runs", cursor.executions[0][0])
         self.assertEqual(cursor.executions[0][1][0], "source-1")
         self.assertEqual(cursor.executions[0][1][1], "meeting-1")
+
+    async def test_create_decision_inserts_trimmed_fields(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "decision-1"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        decision_id = await store.create_decision(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            title="  Delay launch  ",
+            decision_text="  Extend timeline by a week.  ",
+            rationale="  We need more time.  ",
+            owner_text="  Engineering  ",
+            confidence="0.86",
+        )
+
+        self.assertEqual(decision_id, "decision-1")
+        self.assertIn("INSERT INTO decisions", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][2], "Delay launch")
+        self.assertEqual(cursor.executions[0][1][3], "Extend timeline by a week.")
+        self.assertEqual(cursor.executions[0][1][6], 0.86)
+
+    async def test_createDecisionsFromExtraction_is_idempotent_and_skips_invalid(self):
+        cursor = FakeCursor(
+            fetchone_results=[{"id": "decision-1"}, {"id": "decision-2"}]
+        )
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createDecisionsFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            decisions=[
+                {
+                    "title": "Delay launch",
+                    "decision_text": "The team decided to delay launch.",
+                },
+                {"title": "Empty", "decision_text": "   "},
+                {
+                    "title": "No text",
+                    "decisionText": None,
+                },
+                {
+                    "title": "Use camel",
+                    "decisionText": "Use updated date.",
+                    "rationale": "",
+                    "ownerText": "PM",
+                    "confidence": "0.72",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertIn("DELETE FROM decisions", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][0], "meeting-1")
+        self.assertIn("INSERT INTO decisions", cursor.executions[1][0])
+
+    async def test_get_decisions_by_meeting_id(self):
+        cursor = FakeCursor(
+            fetchall_results=[
+                {
+                    "title": "Decision 1",
+                    "decision_text": "First decision",
+                    "rationale": "First rationale",
+                    "owner_text": "PM",
+                    "confidence": 0.5,
+                }
+            ]
+        )
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        rows = await store.get_decisions_by_meeting_id("meeting-1")
+        self.assertEqual(rows, cursor.fetchall_results)
+        self.assertIn("ORDER BY created_at DESC", cursor.executions[0][0])
 
 
 if __name__ == "__main__":

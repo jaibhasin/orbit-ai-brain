@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS extraction_runs (
     error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    meeting_id UUID REFERENCES meetings(id) ON DELETE CASCADE,
+    source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
+    title TEXT,
+    decision_text TEXT NOT NULL,
+    rationale TEXT,
+    owner_text TEXT,
+    confidence NUMERIC,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_meeting_id
+    ON decisions (meeting_id, created_at DESC);
 """
 
 
@@ -157,6 +172,54 @@ class DisabledMeetingStore:
 
     async def get_meeting_by_id(self, meeting_id: str):
         return None
+
+    async def create_decision(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        title: str | None = None,
+        decision_text: str | None = None,
+        rationale: str | None = None,
+        owner_text: str | None = None,
+        confidence: float | None = None,
+    ) -> str | None:
+        return None
+
+    async def createDecision(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_decision(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            title=payload.get("title"),
+            decision_text=payload.get("decisionText") or payload.get("decision_text"),
+            rationale=payload.get("rationale"),
+            owner_text=payload.get("ownerText") or payload.get("owner_text"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createDecisionsFromExtraction(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        decisions=None,
+    ) -> int:
+        return 0
+
+    async def get_decisions_by_meeting_id(self, meeting_id: str):
+        return []
+
+    async def getDecisionsByMeetingId(self, meeting_id: str):
+        return await self.get_decisions_by_meeting_id(meeting_id)
+
+    async def get_recent_decisions(self, limit: int = 20):
+        return []
+
+    async def getRecentDecisions(self, limit: int = 20):
+        return await self.get_recent_decisions(limit=limit)
 
 
 @dataclass
@@ -485,6 +548,186 @@ class PostgresMeetingStore:
             error=payload.get("error"),
         )
 
+    async def create_decision(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        title: str | None = None,
+        decision_text: str | None = None,
+        rationale: str | None = None,
+        owner_text: str | None = None,
+        confidence: float | None = None,
+    ) -> str | None:
+        if not meeting_id or not source_id:
+            return None
+
+        decision_text = self._coerce_optional_str(decision_text)
+        if not decision_text:
+            return None
+
+        title = self._coerce_optional_str(title)
+        rationale = self._coerce_optional_str(rationale)
+        owner_text = self._coerce_optional_str(owner_text)
+        confidence = self._coerce_optional_float(confidence)
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO decisions (
+                        meeting_id,
+                        source_id,
+                        title,
+                        decision_text,
+                        rationale,
+                        owner_text,
+                        confidence
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        meeting_id,
+                        source_id,
+                        title,
+                        decision_text,
+                        rationale,
+                        owner_text,
+                        confidence,
+                    ),
+                )
+                row = await cursor.fetchone()
+                await conn.commit()
+                return row["id"] if row else None
+
+    async def createDecision(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_decision(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            title=payload.get("title"),
+            decision_text=payload.get("decisionText") or payload.get("decision_text"),
+            rationale=payload.get("rationale"),
+            owner_text=payload.get("ownerText") or payload.get("owner_text"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createDecisionsFromExtraction(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        decisions=None,
+    ) -> int:
+        if not meeting_id or not source_id:
+            return 0
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "DELETE FROM decisions WHERE meeting_id = %s",
+                    (meeting_id,),
+                )
+
+                if not isinstance(decisions, list) or not decisions:
+                    await conn.commit()
+                    return 0
+
+                inserted = 0
+                for decision in decisions:
+                    normalized = self._normalize_decision(decision)
+                    if not normalized:
+                        continue
+
+                    await cursor.execute(
+                        """
+                        INSERT INTO decisions (
+                            meeting_id,
+                            source_id,
+                            title,
+                            decision_text,
+                            rationale,
+                            owner_text,
+                            confidence
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            meeting_id,
+                            source_id,
+                            normalized["title"],
+                            normalized["decision_text"],
+                            normalized["rationale"],
+                            normalized["owner_text"],
+                            normalized["confidence"],
+                        ),
+                    )
+                    inserted += 1
+
+                await conn.commit()
+                return inserted
+
+    async def get_decisions_by_meeting_id(self, meeting_id: str):
+        if not meeting_id:
+            return []
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        title,
+                        decision_text,
+                        rationale,
+                        owner_text,
+                        confidence,
+                        created_at
+                    FROM decisions
+                    WHERE meeting_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (meeting_id,),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getDecisionsByMeetingId(self, meeting_id: str):
+        return await self.get_decisions_by_meeting_id(meeting_id)
+
+    async def get_recent_decisions(self, limit: int = 20):
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                safe_limit = max(1, min(int(limit), 1000)) if isinstance(limit, int) else 20
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        meeting_id,
+                        source_id,
+                        title,
+                        decision_text,
+                        rationale,
+                        owner_text,
+                        confidence,
+                        created_at
+                    FROM decisions
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getRecentDecisions(self, limit: int = 20):
+        return await self.get_recent_decisions(limit=limit)
+
     def _normalize_source_chunk(self, chunk: dict) -> dict | None:
         if not isinstance(chunk, dict):
             return None
@@ -510,6 +753,50 @@ class PostgresMeetingStore:
             except (TypeError, ValueError):
                 continue
         return None
+
+    @staticmethod
+    def _coerce_optional_float(value):
+        if value is None:
+            return None
+
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        return value
+
+    @staticmethod
+    def _coerce_optional_str(*values):
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    def _normalize_decision(self, decision):
+        if not isinstance(decision, dict):
+            return None
+
+        decision_text = self._coerce_optional_str(
+            decision.get("decisionText"),
+            decision.get("decision_text"),
+        )
+        if not decision_text:
+            return None
+
+        return {
+            "title": self._coerce_optional_str(decision.get("title")),
+            "decision_text": decision_text,
+            "rationale": self._coerce_optional_str(decision.get("rationale")),
+            "owner_text": self._coerce_optional_str(
+                decision.get("ownerText"),
+                decision.get("owner_text"),
+            ),
+            "confidence": self._coerce_optional_float(decision.get("confidence")),
+        }
 
 
 def build_meeting_store(database_url: str | None):
