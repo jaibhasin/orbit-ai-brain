@@ -124,6 +124,70 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS people", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS sources", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS meetings", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS source_chunks", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id", MEETING_SCHEMA_SQL)
+
+    async def test_save_source_chunks_inserts_text_with_order_and_metadata(self):
+        cursor = FakeCursor()
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        source_id = "source-1"
+        inserted = await store.save_transcript_chunks(
+            source_id,
+            [
+                {
+                    "speakerLabel": "Orbit",
+                    "startMs": 1000,
+                    "endMs": 2000,
+                    "text": "one",
+                    "metadata": {"topic": "test"},
+                },
+                {"text": "   "},
+                {
+                    "speaker_label": "Priya",
+                    "startMs": 2500,
+                    "endMs": 3300,
+                    "text": "two",
+                },
+                {
+                    "text": "",
+                    "speakerLabel": "Ignored",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertIn("INSERT INTO source_chunks", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][1], 0)
+        self.assertEqual(cursor.executions[1][1][1], 1)
+        self.assertEqual(cursor.executions[0][1][2], "Orbit")
+        self.assertEqual(cursor.executions[1][1][2], "Priya")
+        self.assertEqual(cursor.executions[0][1][3], 1000)
+        self.assertEqual(cursor.executions[1][1][4], 3300)
+        self.assertEqual(cursor.executions[0][1][5], "one")
+        self.assertEqual(cursor.executions[1][1][5], "two")
+
+    async def test_save_source_chunks_returns_zero_without_source_id(self):
+        cursor = FakeCursor()
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+
+        inserted = await store.save_transcript_chunks("", [{"text": "one"}])
+
+        self.assertEqual(inserted, 0)
+        self.assertEqual(cursor.executions, [])
+
+    async def test_saveTranscriptChunks_payload_format_works(self):
+        cursor = FakeCursor()
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+
+        inserted = await store.saveTranscriptChunks(
+            {"sourceId": "source-1", "chunks": [{"text": "hello"}]}
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertIn("INSERT INTO source_chunks", cursor.executions[0][0])
 
 
 if __name__ == "__main__":

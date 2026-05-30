@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 
@@ -37,6 +38,22 @@ CREATE TABLE IF NOT EXISTS meetings (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS source_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    speaker_label TEXT,
+    speaker_person_id UUID REFERENCES people(id),
+    start_ms INTEGER,
+    end_ms INTEGER,
+    text TEXT NOT NULL,
+    metadata JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id
+    ON source_chunks(source_id, chunk_index);
 """
 
 
@@ -81,6 +98,14 @@ class DisabledMeetingStore:
         summary_long: str | None = None,
     ) -> None:
         return None
+
+    async def save_transcript_chunks(self, source_id: str, chunks: list[dict]) -> int:
+        return 0
+
+    async def saveTranscriptChunks(self, payload: dict) -> int:
+        source_id = payload.get("sourceId") or payload.get("source_id")
+        chunks = payload.get("chunks") or []
+        return await self.save_transcript_chunks(source_id, chunks)
 
 
 @dataclass
@@ -251,6 +276,79 @@ class PostgresMeetingStore:
             async with conn.cursor() as cursor:
                 await cursor.execute(sql, values)
                 await conn.commit()
+
+    async def save_transcript_chunks(self, source_id: str, chunks: list[dict]) -> int:
+        if not source_id:
+            return 0
+
+        sanitized = [self._normalize_source_chunk(chunk) for chunk in chunks or []]
+        sanitized = [chunk for chunk in sanitized if chunk is not None]
+        if not sanitized:
+            return 0
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                for chunk_index, chunk in enumerate(sanitized):
+                    await cursor.execute(
+                        """
+                        INSERT INTO source_chunks (
+                            source_id,
+                            chunk_index,
+                            speaker_label,
+                            start_ms,
+                            end_ms,
+                            text,
+                            metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                        """,
+                        (
+                            source_id,
+                            chunk_index,
+                            chunk["speaker_label"],
+                            chunk["start_ms"],
+                            chunk["end_ms"],
+                            chunk["text"],
+                            json.dumps(chunk["metadata"]) if chunk["metadata"] is not None else None,
+                        ),
+                    )
+                await conn.commit()
+        return len(sanitized)
+
+    async def saveTranscriptChunks(self, payload: dict) -> int:
+        if not isinstance(payload, dict):
+            return 0
+
+        source_id = payload.get("sourceId") or payload.get("source_id")
+        chunks = payload.get("chunks") or []
+        return await self.save_transcript_chunks(source_id, chunks)
+
+    def _normalize_source_chunk(self, chunk: dict) -> dict | None:
+        if not isinstance(chunk, dict):
+            return None
+
+        text = str(chunk.get("text") or "").strip()
+        if not text:
+            return None
+
+        return {
+            "speaker_label": chunk.get("speakerLabel") or chunk.get("speaker_label"),
+            "start_ms": self._as_optional_int(chunk.get("startMs"), chunk.get("start_ms")),
+            "end_ms": self._as_optional_int(chunk.get("endMs"), chunk.get("end_ms")),
+            "text": text,
+            "metadata": chunk.get("metadata"),
+        }
+
+    def _as_optional_int(self, *values) -> int | None:
+        for value in values:
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
 
 
 def build_meeting_store(database_url: str | None):

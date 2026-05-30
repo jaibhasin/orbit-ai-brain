@@ -60,6 +60,7 @@ class ActiveMeeting:
     session_id: str
     meet_url: str
     state: MeetingState
+    source_id: str | None = None
     meeting_id: str | None = None
     task: asyncio.Task | None = None
     created_at: str = field(default_factory=now_iso)
@@ -324,7 +325,8 @@ class OrbitWhatsAppService:
             if len(self.active_sessions) >= self.max_parallel_meetings:
                 return {"status": "capacity", "meeting_code": meeting_code}
 
-            meeting_id = await self._create_meeting_record(meet_url, from_number, profile_name)
+            meeting_record = await self._create_meeting_record(meet_url, from_number, profile_name)
+            meeting_id, source_id = meeting_record
             session_id = self.build_session_id(meeting_code)
             config = self.build_session_config(meet_url, session_id)
             state = build_meeting_state(config)
@@ -333,6 +335,7 @@ class OrbitWhatsAppService:
                 meet_url=meet_url,
                 state=state,
                 meeting_id=meeting_id,
+                source_id=source_id,
                 created_at=now_iso(),
             )
             self.active_sessions[session_id] = active
@@ -342,11 +345,11 @@ class OrbitWhatsAppService:
 
     async def _create_meeting_record(self, meet_url, from_number, profile_name=None):
         if not from_number:
-            return None
+            return None, None
 
         store = getattr(self, "meeting_store", None)
         if not store:
-            return None
+            return None, None
 
         try:
             person_id = await store.find_or_create_person_by_phone(
@@ -357,15 +360,16 @@ class OrbitWhatsAppService:
                 "gmeet",
                 url=meet_url,
             )
-            return await store.create_meeting(
+            meeting_id = await store.create_meeting(
                 gmeet_url=meet_url,
                 source_id=source_id,
                 status="joining",
                 requested_by_person_id=person_id,
             )
+            return meeting_id, source_id
         except Exception as error:
             log(f"Failed to create meeting persistence row for {meet_url}: {error}", level="error")
-            return None
+            return None, None
 
     @staticmethod
     def _normalize_person_phone(raw_phone):
@@ -845,6 +849,17 @@ class OrbitWhatsAppService:
         try:
             await store.update_meeting_status(
                 active.meeting_id,
+                "processing",
+                ended_at=ended_at,
+                started_at=state.joined_at,
+                summary_short=summary_short,
+                summary_long=summary_long,
+            )
+            chunks = self._build_transcript_source_chunks(state)
+            if chunks:
+                await store.save_transcript_chunks(active.source_id, chunks)
+            await store.update_meeting_status(
+                active.meeting_id,
                 "processed",
                 ended_at=ended_at,
                 started_at=state.joined_at,
@@ -856,6 +871,43 @@ class OrbitWhatsAppService:
                 f"Failed to mark meeting as processed for {active.meeting_id}: {error}",
                 state.session_id,
             )
+            try:
+                await store.update_meeting_status(
+                    active.meeting_id,
+                    "failed",
+                    ended_at=ended_at,
+                    started_at=state.joined_at,
+                    summary_short=summary_short,
+                    summary_long=summary_long,
+                )
+            except Exception as failed_error:
+                log(
+                    f"Failed to mark meeting as failed for {active.meeting_id}: {failed_error}",
+                    state.session_id,
+                )
+
+    def _build_transcript_source_chunks(self, state):
+        chunks = []
+        for segment in state.live_transcript_segments:
+            text = (segment.memory_text or segment.clean_text or segment.raw_text or "").strip()
+            if not text:
+                continue
+
+            chunks.append(
+                {
+                    "speakerLabel": segment.speaker_label or segment.speaker_name,
+                    "startMs": segment.start_ms,
+                    "endMs": segment.end_ms,
+                    "text": text,
+                    "metadata": {
+                        "source_type": segment.source_type,
+                        "speaker_name": segment.speaker_name,
+                        "speaker_source": segment.speaker_source,
+                        "memory_text": segment.memory_text,
+                    },
+                }
+            )
+        return chunks
 
     def _build_meeting_summary(self, state):
         parts = []

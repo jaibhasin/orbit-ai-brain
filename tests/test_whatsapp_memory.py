@@ -66,6 +66,9 @@ class FakeMeetingStore:
         self.sources = []
         self.meetings = []
         self.updates = []
+        self.saved_chunks = []
+        self.transcript_save_calls = []
+        self.fail_save_chunks = False
 
     async def find_or_create_person_by_phone(self, phone, name=None):
         self.people.append((phone, name))
@@ -119,6 +122,18 @@ class FakeMeetingStore:
 
     async def update_meeting_status(self, meeting_id, status, **kwargs):
         self.updates.append({"meeting_id": meeting_id, "status": status, "fields": kwargs})
+
+    async def save_transcript_chunks(self, source_id, chunks):
+        self.transcript_save_calls.append((source_id, chunks))
+        if self.fail_save_chunks:
+            raise RuntimeError("transcript persistence failure")
+        self.saved_chunks.append((source_id, chunks))
+        return len(chunks)
+
+    async def saveTranscriptChunks(self, payload):
+        source_id = payload["sourceId"]
+        chunks = payload["chunks"]
+        return await self.save_transcript_chunks(source_id, chunks)
 
 
 class FakeCompletions:
@@ -245,7 +260,7 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
             type("Turn", (), {"inbound": "old", "reply": "old reply"})()
         ]
 
-        async def fake_start(meet_links):
+        async def fake_start(meet_links, **kwargs):
             return f"started {len(meet_links)}"
 
         service.start_meeting_sessions = fake_start
@@ -323,6 +338,7 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
             meet_url=state.meet_url,
             state=state,
             meeting_id="meeting-1",
+            source_id="source-1",
         )
         service.live_stt = FakeLiveSTT()
 
@@ -333,11 +349,53 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         await service.handle_session_finished(state)
 
+        self.assertEqual(store.updates[0]["status"], "processing")
         self.assertEqual(store.updates[-1]["status"], "processed")
         fields = store.updates[-1]["fields"]
         self.assertEqual(fields["ended_at"], "2026-05-31T11:00:00")
         self.assertEqual(fields["started_at"], "2026-05-31T10:00:00")
         self.assertIn("chat messages captured", fields["summary_short"])
+
+    async def test_session_finished_marks_meeting_failed_when_chunk_save_fails(self):
+        store = FakeMeetingStore()
+        store.fail_save_chunks = True
+        service = build_service(meeting_store=store)
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            joined_at="2026-05-31T10:00:00",
+            live_transcript_segments=[
+                TranscriptSegment(
+                    source_id="s1",
+                    raw_text="hello",
+                    clean_text="Hello.",
+                    memory_text="Hello.",
+                )
+            ],
+            finished_at="2026-05-31T11:00:00",
+        )
+        service.active_sessions[state.session_id] = ActiveMeeting(
+            session_id=state.session_id,
+            meet_url=state.meet_url,
+            state=state,
+            meeting_id="meeting-1",
+            source_id="source-1",
+        )
+        service.live_stt = FakeLiveSTT()
+
+        async def fake_send_whatsapp_message(body):
+            return None
+
+        service.send_whatsapp_message = fake_send_whatsapp_message
+
+        await service.handle_session_finished(state)
+
+        self.assertEqual(store.updates[0]["status"], "processing")
+        self.assertEqual(store.updates[-1]["status"], "failed")
+        self.assertEqual(len(store.transcript_save_calls), 1)
+        self.assertEqual(store.transcript_save_calls[0][0], "source-1")
 
     async def test_new_resets_dialogue_without_stopping_meetings(self):
         service = build_service()
