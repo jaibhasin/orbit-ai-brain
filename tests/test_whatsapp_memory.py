@@ -214,6 +214,33 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.memory.recorded, [(state, message)])
         self.assertEqual(service.memory.finalized, [state])
 
+    async def test_finished_meeting_reports_missing_live_audio(self):
+        service = build_service()
+        whatsapp_updates = []
+
+        async def fake_send_whatsapp_message(body):
+            whatsapp_updates.append(body)
+
+        service.send_whatsapp_message = fake_send_whatsapp_message
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            joined_at="2026-05-30T09:34:16Z",
+            live_stt_requested=True,
+        )
+
+        await service.handle_session_finished(state)
+
+        self.assertEqual(
+            whatsapp_updates,
+            [
+                "Orbit finished Meet abc-defg-hij. Captured 0 chat message(s). "
+                "Live audio transcription did not start because no audio chunk was received."
+            ],
+        )
+
     async def test_meet_chat_mention_gets_model_reply(self):
         service = build_service()
         state = MeetingState(

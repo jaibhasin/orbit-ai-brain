@@ -78,7 +78,7 @@ The extension is Manifest V3 and uses:
 - `offscreen.html` and `offscreen.js` for `getUserMedia`, PCM conversion, and WebSocket streaming.
 - `content.js` for receiving Orbit config inside the Meet tab and injecting the manual activation button.
 
-Chrome requires an extension invocation before tab capture starts. Orbit attempts the configured shortcut after joining. If capture does not start, use the extension action icon or the configured `Alt+Shift+O` command manually. The in-page button can retry capture after permission exists, but it is not a substitute for invoking the extension.
+Chrome requires the user to invoke an extension before tab capture starts. After joining, Orbit posts the capture config and tries a browser mouse click on the injected `Start Orbit audio` button. Orbit waits for the extension callback instead of treating the click as success. If the button is unavailable or Chrome rejects the request, Orbit attempts the configured shortcut. If capture still does not start, use the extension action icon or the configured `Alt+Shift+O` command manually.
 
 ## Browser Use With CDP
 

@@ -678,14 +678,70 @@ async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
         log(state.live_stt_status_detail, state.session_id)
         return False
 
+    button_clicked = False
+    for _ in range(10):
+        try:
+            click_result = await evaluate_json(
+                page,
+                """() => {
+                    const button = document.getElementById('orbit-audio-capture-button');
+                    if (!button) return JSON.stringify({ found: false });
+                    const rect = button.getBoundingClientRect();
+                    return JSON.stringify({
+                        found: true,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2,
+                    });
+                }""",
+            )
+            if click_result and click_result["found"]:
+                mouse = await page.mouse
+                await mouse.click(int(click_result["x"]), int(click_result["y"]))
+                log("Clicked the injected Orbit audio capture button.", state.session_id)
+                button_clicked = True
+                break
+        except Exception as error:
+            log(f"Orbit audio capture button click failed: {error}", state.session_id)
+            break
+        await asyncio.sleep(0.2)
+
+    if button_clicked:
+        for _ in range(10):
+            try:
+                button_status = await evaluate_json(
+                    page,
+                    """() => {
+                        const button = document.getElementById('orbit-audio-capture-button');
+                        return JSON.stringify({
+                            label: button?.textContent || '',
+                            disabled: Boolean(button?.disabled),
+                        });
+                    }""",
+                )
+            except Exception as error:
+                log(f"Orbit audio capture button status check failed: {error}", state.session_id)
+                break
+            button_status = button_status or {}
+            label = str(button_status.get("label") or "")
+            if button_status.get("disabled") or "audio active" in label.lower():
+                state.live_stt_status_detail = "Orbit extension accepted the audio capture request."
+                log(state.live_stt_status_detail, state.session_id)
+                return True
+            if "use alt+shift+o" in label.lower():
+                log("Orbit audio button requested extension shortcut fallback.", state.session_id)
+                break
+            await asyncio.sleep(0.2)
+
     shortcut = os.environ.get("ORBIT_EXTENSION_CAPTURE_SHORTCUT", "Alt+Shift+O")
     try:
-        await page.keyboard.press(shortcut)
+        await page.press(shortcut)
+        state.live_stt_status_detail = f"Tried Orbit extension activation shortcut: {shortcut}"
         log(f"Tried Orbit extension activation shortcut: {shortcut}", state.session_id)
+        return True
     except Exception as error:
-        log(f"Orbit extension activation shortcut failed: {error}", state.session_id)
-
-    return True
+        state.live_stt_status_detail = f"Orbit extension activation shortcut failed: {error}"
+        log(state.live_stt_status_detail, state.session_id)
+        return False
 
 
 def message_mentions_orbit(message):
