@@ -58,6 +58,7 @@ async def stream_monitor_audio(
         ],
         stdout=subprocess.PIPE,
     )
+    assert process.stdout is not None
 
     try:
         async with websockets.connect(websocket_url) as websocket:

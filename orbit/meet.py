@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode
 
 from orbit.caption_attribution import CaptionSnippet
@@ -24,9 +25,7 @@ from orbit.core import (
 )
 from orbit.meet_types import (
     ChatMessage,
-    MeetingSessionCallbacks,
     MeetingSessionConfig,
-    MeetingState,
     PermissionEvent,
     build_meeting_state,
 )
@@ -892,7 +891,7 @@ async def run_meeting_session(config, callbacks=None, state=None):
 
     try:
         browser = build_browser(Browser, state.session_id)
-        agent = Agent(
+        agent: Any = Agent(
             task=build_task(config.meet_url, config.display_name),
             llm=llm,
             browser=browser,

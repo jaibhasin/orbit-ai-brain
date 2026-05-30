@@ -314,6 +314,8 @@ Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
 
 ## Development
 
+See [`TESTING.md`](TESTING.md) for the complete local CI checklist and test conventions.
+
 Run tests:
 
 ```bash

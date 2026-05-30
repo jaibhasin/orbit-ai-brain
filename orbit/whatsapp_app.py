@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 from urllib.parse import urlparse
 
 from orbit.core import ensure_browser_use_runtime, env_int, load_dotenv
@@ -10,10 +11,10 @@ ensure_browser_use_runtime(
     extra_imports=["fastapi", "twilio", "openai", "multipart", "websockets"],
 )
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response, WebSocket
-from twilio.request_validator import RequestValidator
+from fastapi import FastAPI, Form, HTTPException, Request, Response, WebSocket  # noqa: E402
+from twilio.request_validator import RequestValidator  # noqa: E402
 
-from orbit.whatsapp_service import OrbitWhatsAppService
+from orbit.whatsapp_service import OrbitWhatsAppService  # noqa: E402
 
 
 class TwiMLResponse(Response):
@@ -21,7 +22,7 @@ class TwiMLResponse(Response):
 
 
 TWIML_EXAMPLE = """<?xml version="1.0" encoding="UTF-8"?><Response />"""
-TWIML_RESPONSE_DOC = {
+TWIML_RESPONSE_DOC: dict[int | str, dict[str, Any]] = {
     200: {
         "description": "Twilio TwiML response",
         "content": {

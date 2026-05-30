@@ -53,6 +53,30 @@ class TriggerExtensionAudioCaptureTests(unittest.IsolatedAsyncioTestCase):
             display_name="Orbit",
         )
 
+    async def test_returns_false_without_audio_stream_url(self):
+        page = self.FakePage([])
+        state = self.build_state()
+
+        result = await trigger_extension_audio_capture(page, state, None)
+
+        self.assertFalse(result)
+        page.press.assert_not_awaited()
+
+    async def test_returns_false_when_capture_config_post_fails(self):
+        page = self.FakePage([])
+        page.evaluate = AsyncMock(side_effect=RuntimeError("page unavailable"))
+        state = self.build_state()
+
+        result = await trigger_extension_audio_capture(
+            page,
+            state,
+            "ws://127.0.0.1:8000/internal/audio-stream/session-1",
+        )
+
+        self.assertFalse(result)
+        self.assertIn("page unavailable", state.live_stt_status_detail)
+        page.press.assert_not_awaited()
+
     async def test_clicks_injected_audio_button(self):
         page = self.FakePage(
             [
@@ -100,6 +124,34 @@ class TriggerExtensionAudioCaptureTests(unittest.IsolatedAsyncioTestCase):
                 '{"label": "Use Alt+Shift+O or the extension icon", "disabled": false}',
             ]
         )
+        state = self.build_state()
+
+        result = await trigger_extension_audio_capture(
+            page,
+            state,
+            "ws://127.0.0.1:8000/internal/audio-stream/session-1",
+        )
+
+        self.assertTrue(result)
+        page.press.assert_awaited_once_with("Alt+Shift+O")
+
+    async def test_uses_shortcut_when_audio_button_status_check_fails(self):
+        page = self.FakePage(
+            [
+                True,
+                '{"found": true, "x": 120.8, "y": 45.2}',
+                RuntimeError("page rerendered"),
+            ]
+        )
+        original_evaluate = page.evaluate
+
+        async def evaluate(script, *args):
+            result = await original_evaluate(script, *args)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        page.evaluate = evaluate
         state = self.build_state()
 
         result = await trigger_extension_audio_capture(

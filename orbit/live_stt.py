@@ -61,6 +61,7 @@ class LiveSTTSession:
             return
 
         self.transcriber = self.transcriber_factory(self.audio_format)
+        assert self.transcriber is not None
         await self.transcriber.connect()
         self.receive_task = asyncio.create_task(self._receive_loop())
         log("Live STT Deepgram stream started.", self.state.session_id)
@@ -72,6 +73,7 @@ class LiveSTTSession:
             return
         if self.transcriber is None:
             await self.start()
+        assert self.transcriber is not None
         self.audio_chunks_received += 1
         await self.transcriber.send_audio(chunk)
 
@@ -123,6 +125,7 @@ class LiveSTTSession:
 
     async def _receive_loop(self) -> None:
         try:
+            assert self.transcriber is not None
             async for message in self.transcriber.receive():
                 await self.process_deepgram_message(message)
         except asyncio.CancelledError:

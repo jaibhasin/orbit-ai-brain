@@ -1,9 +1,9 @@
 playwright==1.54.0
-browser-use
-fastapi
-uvicorn
-python-multipart
-twilio
-openai
-psycopg[binary]
-websockets
+browser-use==0.12.9
+fastapi==0.136.3
+uvicorn==0.48.0
+python-multipart==0.0.29
+twilio==9.10.9
+openai==2.16.0
+psycopg[binary]==3.3.4
+websockets==16.0

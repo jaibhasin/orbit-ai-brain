@@ -145,11 +145,13 @@ class DeepgramLiveTranscriber:
             return
         if self._ws is None:
             await self.connect()
+        assert self._ws is not None
         await self._ws.send(audio_chunk)
 
     async def receive(self):
         if self._ws is None:
             await self.connect()
+        assert self._ws is not None
         async for message in self._ws:
             yield message
 
