@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from orbit.meet import (
     build_intro_message,
+    finalize_meeting_status,
     get_participant_count,
     is_orbit_authored_message,
     monitor_chat,
@@ -32,6 +33,34 @@ class MeetChatTests(unittest.TestCase):
         )
 
         self.assertTrue(is_orbit_authored_message(state, message))
+
+    def test_finished_joined_meeting_becomes_completed(self):
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            status="live_stt_capture_requested",
+            joined_at="2026-05-31T00:00:00+05:30",
+        )
+
+        finalize_meeting_status(state)
+
+        self.assertEqual(state.status, "completed")
+
+    def test_finished_error_takes_precedence_over_joined(self):
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            joined_at="2026-05-31T00:00:00+05:30",
+            last_error="browser crashed",
+        )
+
+        finalize_meeting_status(state)
+
+        self.assertEqual(state.status, "failed")
 
 
 class ParticipantExitTests(unittest.IsolatedAsyncioTestCase):

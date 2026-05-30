@@ -6,7 +6,7 @@ from typing import Protocol
 
 from openai import AsyncOpenAI
 
-from orbit.core import env_int, log
+from orbit.core import env_float, env_int, log
 from orbit.meet_types import ChatMessage, MeetingState
 from orbit.transcript import TranscriptSegment
 
@@ -96,5 +96,7 @@ def build_memory_service(openai_client: AsyncOpenAI, answer_model: str) -> Memor
         openai_client=openai_client,
         answer_model=answer_model,
         embedding_model=os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+        organization_id=os.environ.get("ORBIT_ORGANIZATION_ID", "default"),
         search_limit=env_int("ORBIT_MEMORY_SEARCH_LIMIT", 6),
+        similarity_threshold=env_float("ORBIT_MEMORY_SIMILARITY_THRESHOLD", 0.35),
     )

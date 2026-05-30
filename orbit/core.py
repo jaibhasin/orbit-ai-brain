@@ -48,6 +48,13 @@ def env_int(name, default):
     return int(value)
 
 
+def env_float(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return float(value)
+
+
 def log(message, session_id=None):
     prefix = "[browser-use-meet]" if not session_id else f"[browser-use-meet:{session_id}]"
     print(f"{prefix} {message}")

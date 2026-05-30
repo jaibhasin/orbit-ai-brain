@@ -19,7 +19,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "ORBIT_USER_START_CAPTURE") {
-    startCaptureForTab(sender.tab)
+    startCaptureAndNotify(sender.tab)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
@@ -29,14 +29,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.action.onClicked.addListener(async (tab) => {
-  await startCaptureForTab(tab);
+  await startCaptureAndNotify(tab);
 });
 
 chrome.commands.onCommand.addListener(async (command) => {
   if (command !== "start-capture") return;
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  await startCaptureForTab(tab);
+  await startCaptureAndNotify(tab);
 });
+
+async function startCaptureAndNotify(tab) {
+  let result;
+  try {
+    result = await startCaptureForTab(tab);
+  } catch (error) {
+    result = { ok: false, error: String(error) };
+  }
+  await notifyCaptureStatus(tab && tab.id, result);
+  return result;
+}
+
+async function notifyCaptureStatus(tabId, result) {
+  if (!tabId) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "ORBIT_CAPTURE_STATUS",
+      ok: Boolean(result && result.ok),
+      error: result && result.error
+    });
+  } catch (error) {
+    console.warn("Could not report Orbit capture status to the Meet tab:", error);
+  }
+}
 
 async function startCaptureForTab(tab) {
   if (!tab || !tab.id) return { ok: false, error: "No active tab." };

@@ -12,10 +12,12 @@ from orbit.deepgram_live import (
 )
 from orbit.meet_types import MeetingState
 from orbit.memory import MemoryService
+from orbit.transcript import TranscriptSegment
 from orbit.transcript_normalizer import normalize_transcript_segments
 
 MAX_LIVE_TRANSCRIPT_SEGMENTS = 400
 MAX_LIVE_TRANSCRIPT_CHARS = 80000
+MAX_LOGGED_TRANSCRIPT_CHARS = 500
 
 
 @dataclass
@@ -55,7 +57,9 @@ class LiveSTTSession:
         self.captions: list[CaptionSnippet] = []
         self.audio_chunks_received = 0
         self.final_segments_recorded = 0
+        self.pending_segments: list[TranscriptSegment] = []
         self.last_error: str | None = None
+        self.last_persistence_error: str | None = None
         self.closed = False
         self._finalize_timeout_s = 1.5
 
@@ -94,18 +98,51 @@ class LiveSTTSession:
         if not raw_segments:
             return
 
+        log(
+            f"Deepgram final transcript received: {_format_segments_for_log(raw_segments, 'raw_text')}",
+            self.state.session_id,
+        )
         attributed_segments = merge_caption_speakers(raw_segments, self.captions)
         normalized_segments = normalize_transcript_segments(
             self.state.meeting_code,
             attributed_segments,
         )
         if not normalized_segments:
+            log("Deepgram final transcript dropped during normalization.", self.state.session_id)
             return
 
+        log(
+            f"Normalized transcript segment(s): {_format_segments_for_log(normalized_segments, 'clean_text')}",
+            self.state.session_id,
+        )
         self.state.live_transcript_segments.extend(normalized_segments)
         self._trim_live_transcript_buffer()
-        await self.memory.record_transcript_segments(self.state, normalized_segments)
-        self.final_segments_recorded += len(normalized_segments)
+        self.pending_segments.extend(normalized_segments)
+        await self._flush_pending_segments()
+
+    async def _flush_pending_segments(self) -> None:
+        if not self.pending_segments:
+            return
+
+        segments = list(self.pending_segments)
+        try:
+            await self.memory.record_transcript_segments(self.state, segments)
+        except Exception as error:
+            self.last_persistence_error = str(error)
+            log(
+                f"Transcript text persistence deferred for {len(segments)} segment(s): {error}",
+                self.state.session_id,
+            )
+            return
+
+        del self.pending_segments[: len(segments)]
+        self.last_persistence_error = None
+        log(
+            f"Stored {len(segments)} normalized transcript segment(s) through "
+            f"{type(self.memory).__name__}.",
+            self.state.session_id,
+        )
+        self.final_segments_recorded += len(segments)
 
     def _trim_live_transcript_buffer(self) -> None:
         segments = self.state.live_transcript_segments[-MAX_LIVE_TRANSCRIPT_SEGMENTS:]
@@ -130,6 +167,7 @@ class LiveSTTSession:
                     except asyncio.TimeoutError:
                         pass
             await self.transcriber.close()
+        await self._flush_pending_segments()
         if self.receive_task is not None:
             self.receive_task.cancel()
             try:
@@ -138,6 +176,12 @@ class LiveSTTSession:
                 pass
         if self.audio_chunks_received == 0:
             log("Live STT stream closed without receiving audio chunks.", self.state.session_id)
+        if self.pending_segments:
+            log(
+                f"Live STT stream closed with {len(self.pending_segments)} transcript segment(s) "
+                "still queued for persistence.",
+                self.state.session_id,
+            )
 
     async def _receive_loop(self) -> None:
         try:
@@ -160,6 +204,19 @@ class LiveSTTSession:
                 channels=audio_format.channels,
             ),
         )
+
+
+def _format_segments_for_log(segments, text_field: str) -> str:
+    parts = []
+    for segment in segments:
+        text = str(getattr(segment, text_field, "") or "")
+        if len(text) > MAX_LOGGED_TRANSCRIPT_CHARS:
+            text = f"{text[:MAX_LOGGED_TRANSCRIPT_CHARS]}..."
+        parts.append(
+            f"{segment.source_id} [{segment.start_ms}-{segment.end_ms}] "
+            f"{text_field}={text!r}"
+        )
+    return "; ".join(parts)
 
 
 class LiveSTTManager:

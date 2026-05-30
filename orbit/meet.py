@@ -174,6 +174,15 @@ async def emit_finished(callbacks, state):
         await maybe_await(callbacks.on_finished(state))
 
 
+def finalize_meeting_status(state):
+    if state.last_error:
+        state.status = "failed"
+    elif state.stop_requested:
+        state.status = "stopped"
+    elif state.joined_at:
+        state.status = "completed"
+
+
 async def evaluate_json(page, script, *args):
     raw_result = await page.evaluate(script, *args)
     if raw_result is None or raw_result == "":
@@ -1044,6 +1053,7 @@ async def run_meeting_session(config, callbacks=None, state=None):
         log(f"Meeting session failed: {error}", state.session_id)
     finally:
         state.finished_at = now_iso()
+        finalize_meeting_status(state)
         if state.permission_events:
             log(f"Recorded {len(state.permission_events)} permission event(s).", state.session_id)
         if browser is not None:

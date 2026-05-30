@@ -21,6 +21,7 @@ from orbit.meet_types import (
     MeetingState,
     build_meeting_state,
 )
+from orbit.meeting_store import build_meeting_store
 from orbit.memory import MemoryAnswer, MemorySource, build_memory_service
 from orbit.live_stt import LiveAudioFormat, LiveSTTManager
 from orbit.transcript import TranscriptSegment, format_timestamp_ms
@@ -58,6 +59,7 @@ class ActiveMeeting:
     session_id: str
     meet_url: str
     state: MeetingState
+    meeting_id: str | None = None
     task: asyncio.Task | None = None
     created_at: str = field(default_factory=now_iso)
 
@@ -121,6 +123,7 @@ class OrbitWhatsAppService:
 
         self.twilio_client = Client(self.twilio_account_sid, self.twilio_auth_token)
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key)
+        self.meeting_store = build_meeting_store(self._read_env("DATABASE_URL"))
         self.memory = build_memory_service(self.openai_client, self.model_name)
         self.live_stt = LiveSTTManager(
             memory=self.memory,
@@ -158,7 +161,7 @@ class OrbitWhatsAppService:
         meet_links = extract_meet_links(body)
         if meet_links:
             self.reset_dialogue_history()
-            reply = await self.start_meeting_sessions(meet_links)
+            reply = await self.start_meeting_sessions(meet_links, from_number=from_number)
             return self._reply_and_record(body, reply)
 
         intent = self.parse_whatsapp_intent(body)
@@ -272,13 +275,13 @@ class OrbitWhatsAppService:
             return await self.answer_live_recall(intent.text, intent.meeting_code)
         return await self.answer_general_question(intent.text)
 
-    async def start_meeting_sessions(self, meet_links):
+    async def start_meeting_sessions(self, meet_links, from_number=None):
         started = []
         duplicates = []
         rejected = []
 
         for meet_url in meet_links:
-            start_result = await self.start_single_meeting_session(meet_url)
+            start_result = await self.start_single_meeting_session(meet_url, from_number=from_number)
             if start_result["status"] == "started":
                 started.append(start_result["meeting_code"])
             elif start_result["status"] == "duplicate":
@@ -301,7 +304,7 @@ class OrbitWhatsAppService:
             )
         return " ".join(parts)
 
-    async def start_single_meeting_session(self, meet_url):
+    async def start_single_meeting_session(self, meet_url, from_number=None):
         meeting_code = extract_meeting_code(meet_url)
 
         async with self.lock:
@@ -311,6 +314,7 @@ class OrbitWhatsAppService:
             if len(self.active_sessions) >= self.max_parallel_meetings:
                 return {"status": "capacity", "meeting_code": meeting_code}
 
+            meeting_id = await self._create_meeting_record(meet_url, from_number)
             session_id = self.build_session_id(meeting_code)
             config = self.build_session_config(meet_url, session_id)
             state = build_meeting_state(config)
@@ -318,12 +322,43 @@ class OrbitWhatsAppService:
                 session_id=session_id,
                 meet_url=meet_url,
                 state=state,
+                meeting_id=meeting_id,
                 created_at=now_iso(),
             )
             self.active_sessions[session_id] = active
             active.task = asyncio.create_task(self._run_session(active, config))
 
-        return {"status": "started", "meeting_code": meeting_code}
+            return {"status": "started", "meeting_code": meeting_code}
+
+    async def _create_meeting_record(self, meet_url, from_number):
+        if not from_number:
+            return None
+
+        store = getattr(self, "meeting_store", None)
+        if not store:
+            return None
+
+        try:
+            person_id = await store.find_or_create_person_by_phone(
+                self._normalize_person_phone(from_number),
+            )
+            source_id = await store.create_source(
+                "gmeet",
+                url=meet_url,
+            )
+            return await store.create_meeting(
+                gmeet_url=meet_url,
+                source_id=source_id,
+                status="joining",
+                requested_by_person_id=person_id,
+            )
+        except Exception as error:
+            log(f"Failed to create meeting persistence row for {meet_url}: {error}")
+            return None
+
+    @staticmethod
+    def _normalize_person_phone(raw_phone):
+        return (raw_phone or "").replace("whatsapp:", "").strip() or None
 
     async def _run_session(self, active, config):
         callbacks = MeetingSessionCallbacks(
@@ -591,6 +626,8 @@ class OrbitWhatsAppService:
         return start or end or ""
 
     async def handle_session_status(self, state, status, detail):
+        await self._update_persistent_meeting_status(state, status)
+
         if status == "starting_join":
             await self.send_whatsapp_message(
                 f"Orbit is starting the join flow for Meet {state.meeting_code}."
@@ -657,6 +694,48 @@ class OrbitWhatsAppService:
                 f"Orbit hit an error while handling Meet {state.meeting_code}: {detail}"
             )
 
+    def _persistent_meeting_status(self, status, state):
+        if status in {"joined", "live_stt_capture_requested", "chat_monitor_unavailable", "live_stt_unavailable"}:
+            return "live"
+        if status in {
+            "starting_join",
+            "waiting_for_host",
+            "join_denied",
+            "join_blocked",
+            "join_unconfirmed",
+            "no_active_page",
+            "error",
+        }:
+            return "joining"
+        if state.joined_at:
+            return "live"
+        return None
+
+    async def _update_persistent_meeting_status(self, state, status):
+        active = self.active_sessions.get(state.session_id)
+        if not active or not active.meeting_id:
+            return
+        meeting_status = self._persistent_meeting_status(status, state)
+        if not meeting_status:
+            return
+
+        store = getattr(self, "meeting_store", None)
+        if not store:
+            return
+
+        started_at = state.joined_at if meeting_status == "live" else None
+        try:
+            await store.update_meeting_status(
+                active.meeting_id,
+                meeting_status,
+                started_at=started_at,
+            )
+        except Exception as error:
+            log(
+                f"Failed to update persistent meeting status for {active.meeting_id}: {error}",
+                state.session_id,
+            )
+
     async def handle_chat_message(self, state: MeetingState, message: ChatMessage, source: str):
         try:
             await self.memory.record_meeting_chat(state, message)
@@ -717,6 +796,7 @@ class OrbitWhatsAppService:
 
     async def handle_session_finished(self, state):
         await self.live_stt.stop(state.session_id)
+        await self._finalize_persistent_meeting(state)
         try:
             await self.memory.finalize_meeting(state)
         except Exception as error:
@@ -738,6 +818,52 @@ class OrbitWhatsAppService:
             await self.send_whatsapp_message(
                 f"Orbit stopped waiting for Meet {state.meeting_code} without being admitted."
             )
+
+    async def _finalize_persistent_meeting(self, state):
+        active = self.active_sessions.get(state.session_id)
+        if not active or not active.meeting_id:
+            return
+
+        store = getattr(self, "meeting_store", None)
+        if not store:
+            return
+
+        summary_short, summary_long = self._build_meeting_summary(state)
+        ended_at = state.finished_at or now_iso()
+        try:
+            await store.update_meeting_status(
+                active.meeting_id,
+                "processed",
+                ended_at=ended_at,
+                started_at=state.joined_at,
+                summary_short=summary_short,
+                summary_long=summary_long,
+            )
+        except Exception as error:
+            log(
+                f"Failed to mark meeting as processed for {active.meeting_id}: {error}",
+                state.session_id,
+            )
+
+    def _build_meeting_summary(self, state):
+        parts = []
+        if state.live_stt_requested:
+            parts.append("live STT requested")
+        if state.captured_messages:
+            parts.append(f"{len(state.captured_messages)} chat messages captured")
+        if state.live_transcript_segments:
+            parts.append(f"{len(state.live_transcript_segments)} transcript segments captured")
+        summary_short = "; ".join(parts) if parts else None
+        summary_long = None
+        if state.live_transcript_segments:
+            summary_long = " | ".join(
+                segment.clean_text.strip()
+                for segment in state.live_transcript_segments
+                if segment.clean_text
+            )
+            if summary_long and len(summary_long) > 4000:
+                summary_long = summary_long[:4000]
+        return summary_short, summary_long
 
     async def send_whatsapp_message(self, body):
         log(f"Sending WhatsApp update: {body}")

@@ -210,7 +210,9 @@ TWILIO_ALLOWED_FROM=whatsapp:+15551234567
 ORBIT_WEBHOOK_HOST=0.0.0.0
 ORBIT_WEBHOOK_PORT=8000
 ORBIT_MAX_PARALLEL_MEETINGS=3
+ORBIT_ORGANIZATION_ID=default
 ORBIT_MEMORY_SEARCH_LIMIT=6
+ORBIT_MEMORY_SIMILARITY_THRESHOLD=0.35
 
 DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
 ```
@@ -233,14 +235,27 @@ Then set this in `.env` and restart the WhatsApp agent:
 DATABASE_URL=postgresql://orbit:orbit@localhost:5432/orbit
 ```
 
-Orbit creates its v1 tables automatically on first memory use:
+Orbit creates or migrates its private memory tables automatically on first memory use:
 
-- `orbit_meet_sessions`
-- `orbit_chat_messages`
-- `orbit_transcript_segments`
-- `orbit_memory_chunks`
+- `orbit_private.orbit_meet_sessions`
+- `orbit_private.orbit_chat_messages`
+- `orbit_private.orbit_transcript_segments`
+- `orbit_private.orbit_memory_chunks`
 
-The schema stores meeting/session metadata, raw captured chat messages, final transcript segments, and vectorized memory chunks. This schema is deliberately treated as replaceable while the product memory model evolves.
+The schema stores meeting/session metadata, raw and normalized chat text, raw and normalized transcript text, searchable memory text, and vector embeddings. Text rows commit before embedding calls, so a temporary embedding failure leaves inspectable text queued for reindexing instead of losing the transcript. Retrieval is scoped by `ORBIT_ORGANIZATION_ID`, filters out low-similarity matches, and only compares embeddings created by the configured model.
+
+Apply the migration explicitly and inspect stored text:
+
+```bash
+python scripts/migrate_memory.py
+python scripts/audit_memory.py --show-text
+```
+
+Retry pending, failed, or outdated-model embeddings without replaying a meeting:
+
+```bash
+python scripts/reindex_memory.py
+```
 
 ## Run
 
@@ -357,7 +372,9 @@ Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
 | `ORBIT_WEBHOOK_HOST` | FastAPI bind host |
 | `ORBIT_WEBHOOK_PORT` | FastAPI bind port |
 | `ORBIT_MAX_PARALLEL_MEETINGS` | Meeting concurrency limit |
+| `ORBIT_ORGANIZATION_ID` | Stable organization scope for stored memory, default `default` |
 | `ORBIT_MEMORY_SEARCH_LIMIT` | Number of memory chunks retrieved for RAG |
+| `ORBIT_MEMORY_SIMILARITY_THRESHOLD` | Minimum cosine-similarity score for memory retrieval, default `0.35` |
 | `GMEET_DISPLAY_NAME` | Name Orbit uses in Google Meet |
 | `GMEET_WAIT_AFTER_JOIN_MS` | Maximum monitoring duration after joining, default `300000` (5 minutes). Orbit checks participants every 30 seconds and leaves earlier after other participants depart and it is the only participant left. |
 | `GMEET_USE_SYSTEM_CHROME` | Use installed Chrome profile instead of managed browser |

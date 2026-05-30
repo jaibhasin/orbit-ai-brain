@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 from orbit.caption_attribution import CaptionSnippet
 from orbit.live_stt import LiveAudioFormat, LiveSTTManager, LiveSTTSession
@@ -27,6 +28,18 @@ class FakeMemory:
 
     async def answer_from_memory(self, question):
         raise AssertionError("not used")
+
+
+class FlakyMemory(FakeMemory):
+    def __init__(self):
+        super().__init__()
+        self.failures_remaining = 1
+
+    async def record_transcript_segments(self, state, segments):
+        if self.failures_remaining:
+            self.failures_remaining -= 1
+            raise RuntimeError("database unavailable")
+        await super().record_transcript_segments(state, segments)
 
 
 class FakeTranscriber:
@@ -88,7 +101,8 @@ def final_deepgram_message(text="we should launch on friday"):
 
 
 class LiveSTTTests(unittest.IsolatedAsyncioTestCase):
-    async def test_final_deepgram_message_is_normalized_and_stored(self):
+    @patch("orbit.live_stt.log")
+    async def test_final_deepgram_message_is_normalized_and_stored(self, log):
         memory = FakeMemory()
         state = build_state()
         session = LiveSTTSession(
@@ -105,6 +119,50 @@ class LiveSTTTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(segments[0].clean_text, "We should launch on friday.")
         self.assertIn("Meet abc-defg-hij transcript", segments[0].memory_text)
         self.assertEqual(state.live_transcript_segments, segments)
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(
+            any(
+                message.startswith("Deepgram final transcript received:")
+                and "we should launch on friday" in message
+                for message in messages
+            )
+        )
+        self.assertTrue(
+            any(
+                message.startswith("Normalized transcript segment(s):")
+                and "We should launch on friday." in message
+                for message in messages
+            )
+        )
+        self.assertIn(
+            "Stored 1 normalized transcript segment(s) through FakeMemory.",
+            messages,
+        )
+
+    @patch("orbit.live_stt.log")
+    async def test_transcript_persistence_failure_is_queued_and_retried(self, log):
+        memory = FlakyMemory()
+        session = LiveSTTSession(
+            state=build_state(),
+            memory=memory,
+            api_key="dg-key",
+            model="nova-3",
+        )
+
+        await session.process_deepgram_message(final_deepgram_message("first transcript"))
+        self.assertEqual(len(session.pending_segments), 1)
+        self.assertEqual(session.final_segments_recorded, 0)
+
+        await session.process_deepgram_message(final_deepgram_message("second transcript"))
+
+        self.assertEqual(len(session.pending_segments), 0)
+        self.assertEqual(session.final_segments_recorded, 2)
+        self.assertEqual(len(memory.transcripts), 1)
+        self.assertEqual(len(memory.transcripts[0][1]), 2)
+        messages = [call.args[0] for call in log.call_args_list]
+        self.assertTrue(
+            any(message.startswith("Transcript text persistence deferred") for message in messages)
+        )
 
     async def test_caption_names_are_best_effort_enrichment(self):
         memory = FakeMemory()

@@ -40,6 +40,7 @@ python -m compileall -q orbit scripts
 node --check extension/orbit-audio-capture/content.js
 node --check extension/orbit-audio-capture/service_worker.js
 node --check extension/orbit-audio-capture/offscreen.js
+node tests/orbit_audio_capture_extension.test.js
 python -m json.tool extension/orbit-audio-capture/manifest.json >/dev/null
 ```
 
@@ -47,8 +48,18 @@ python -m json.tool extension/orbit-audio-capture/manifest.json >/dev/null
 
 - Unit tests live in `tests/test_*.py` and cover transcript parsing, normalization, caption attribution, configuration helpers, and chat behavior.
 - Integration-style tests exercise the extension audio WebSocket handler with fake WebSocket and STT services.
-- Chrome extension files receive syntax and manifest validation in CI.
+- Postgres memory unit tests verify text-first persistence, deferred embedding failures, organization-scoped retrieval, and private-schema migration SQL.
+- Chrome extension files receive syntax, behavior, and manifest validation in CI.
 - A real headed-Chrome smoke test is still required for `chrome.tabCapture`, Google Meet DOM behavior, and live Deepgram streaming.
+
+## Hosted Memory Audit
+
+After applying a Postgres migration, verify security, indexing state, and stored text against the configured database:
+
+```bash
+python scripts/migrate_memory.py
+python scripts/audit_memory.py --show-text
+```
 
 ## Conventions
 

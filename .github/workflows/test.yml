@@ -97,5 +97,8 @@ jobs:
           node --check extension/orbit-audio-capture/service_worker.js
           node --check extension/orbit-audio-capture/offscreen.js
 
+      - name: Run Chrome extension tests
+        run: node tests/orbit_audio_capture_extension.test.js
+
       - name: Validate Chrome extension manifest
         run: python -m json.tool extension/orbit-audio-capture/manifest.json >/dev/null

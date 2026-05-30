@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from urllib.parse import urlencode
@@ -80,7 +81,10 @@ def parse_deepgram_payload(payload: dict, source_id_prefix: str = "live") -> lis
     confidence = _coerce_float(alternative.get("confidence"))
     start_ms = _seconds_to_ms(start_seconds)
     end_ms = _seconds_to_ms(end_seconds)
-    source_id = f"{source_id_prefix}-{start_ms or 0}-{end_ms or 0}"
+    fingerprint = hashlib.sha256(
+        f"{payload.get('metadata', {}).get('request_id')}|{start_ms}|{end_ms}|{transcript}".encode()
+    ).hexdigest()[:16]
+    source_id = f"{source_id_prefix}-{start_ms or 0}-{end_ms or 0}-{fingerprint}"
 
     return [
         TranscriptSegment(

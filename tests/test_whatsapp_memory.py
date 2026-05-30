@@ -60,6 +60,67 @@ class FakeResponse:
         self.choices = [FakeChoice(content)]
 
 
+class FakeMeetingStore:
+    def __init__(self):
+        self.people = []
+        self.sources = []
+        self.meetings = []
+        self.updates = []
+
+    async def find_or_create_person_by_phone(self, phone, name=None):
+        self.people.append((phone, name))
+        return "person-1"
+
+    async def create_source(
+        self,
+        source_type,
+        *,
+        url=None,
+        title=None,
+        raw_text=None,
+        raw_payload=None,
+    ):
+        self.sources.append(
+            {
+                "source_type": source_type,
+                "url": url,
+                "title": title,
+                "raw_text": raw_text,
+                "raw_payload": raw_payload,
+            }
+        )
+        return "source-1"
+
+    async def create_meeting(
+        self,
+        gmeet_url,
+        *,
+        source_id,
+        status,
+        requested_by_person_id=None,
+        summary_short=None,
+        summary_long=None,
+        started_at=None,
+        ended_at=None,
+    ):
+        self.meetings.append(
+            {
+                "gmeet_url": gmeet_url,
+                "source_id": source_id,
+                "status": status,
+                "requested_by_person_id": requested_by_person_id,
+                "summary_short": summary_short,
+                "summary_long": summary_long,
+                "started_at": started_at,
+                "ended_at": ended_at,
+            }
+        )
+        return "meeting-1"
+
+    async def update_meeting_status(self, meeting_id, status, **kwargs):
+        self.updates.append({"meeting_id": meeting_id, "status": status, "fields": kwargs})
+
+
 class FakeCompletions:
     def __init__(self):
         self.calls = []
@@ -129,7 +190,7 @@ class FakeWebSocket:
         self.sent_json.append(payload)
 
 
-def build_service(memory=None):
+def build_service(memory=None, meeting_store=None):
     service = OrbitWhatsAppService.__new__(OrbitWhatsAppService)
     service.twilio_allowed_from = "whatsapp:+15551234567"
     service.model_name = "test-model"
@@ -138,6 +199,7 @@ def build_service(memory=None):
     service.active_sessions = {}
     service.lock = asyncio.Lock()
     service.memory = memory or FakeMemory()
+    service.meeting_store = meeting_store or FakeMeetingStore()
     service.live_stt = FakeLiveSTT()
     return service
 
@@ -197,6 +259,85 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.memory.questions, [])
         self.assertEqual(len(service.dialogue_history), 1)
         self.assertEqual(service.dialogue_history[0].inbound, "join https://meet.google.com/abc-defg-hij")
+
+    async def test_start_single_meeting_session_persists_people_source_and_meeting(self):
+        store = FakeMeetingStore()
+        service = build_service(memory=FakeMemory(), meeting_store=store)
+        result = await service.start_single_meeting_session(
+            "https://meet.google.com/abc-defg-hij",
+            from_number="whatsapp:+15551234567",
+        )
+
+        self.assertEqual(result["status"], "started")
+        self.assertEqual(store.people, [("15551234567", None)])
+        self.assertEqual(store.sources[0]["url"], "https://meet.google.com/abc-defg-hij")
+        self.assertEqual(store.meetings[0]["status"], "joining")
+        self.assertEqual(store.meetings[0]["requested_by_person_id"], "person-1")
+        self.assertEqual(store.meetings[0]["gmeet_url"], "https://meet.google.com/abc-defg-hij")
+
+    async def test_session_status_updates_persistent_meeting_status(self):
+        store = FakeMeetingStore()
+        service = build_service(meeting_store=store)
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+        )
+        service.active_sessions[state.session_id] = ActiveMeeting(
+            session_id=state.session_id,
+            meet_url=state.meet_url,
+            state=state,
+            meeting_id="meeting-1",
+        )
+
+        await service.handle_session_status(state, "starting_join", "opening")
+        await service.handle_session_status(state, "joined", "joined")
+
+        self.assertEqual(store.updates[0]["status"], "joining")
+        self.assertEqual(store.updates[1]["status"], "live")
+
+    async def test_session_finished_marks_meeting_processed(self):
+        store = FakeMeetingStore()
+        service = build_service(meeting_store=store)
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            joined_at="2026-05-31T10:00:00",
+            live_stt_requested=True,
+            finished_at="2026-05-31T11:00:00",
+        )
+        state.captured_messages = [
+            ChatMessage(
+                fingerprint="fp",
+                raw_text="Orbit\\nhello",
+                normalized_text="hello",
+                author="Orbit",
+                timestamp_text="10:00",
+            )
+        ]
+        service.active_sessions[state.session_id] = ActiveMeeting(
+            session_id=state.session_id,
+            meet_url=state.meet_url,
+            state=state,
+            meeting_id="meeting-1",
+        )
+        service.live_stt = FakeLiveSTT()
+
+        async def fake_send_whatsapp_message(body):
+            return None
+
+        service.send_whatsapp_message = fake_send_whatsapp_message
+
+        await service.handle_session_finished(state)
+
+        self.assertEqual(store.updates[-1]["status"], "processed")
+        fields = store.updates[-1]["fields"]
+        self.assertEqual(fields["ended_at"], "2026-05-31T11:00:00")
+        self.assertEqual(fields["started_at"], "2026-05-31T10:00:00")
+        self.assertIn("chat messages captured", fields["summary_short"])
 
     async def test_new_resets_dialogue_without_stopping_meetings(self):
         service = build_service()

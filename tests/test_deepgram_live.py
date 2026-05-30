@@ -61,6 +61,23 @@ class DeepgramLiveTests(unittest.TestCase):
 
         self.assertEqual(parse_deepgram_payload(payload), [])
 
+    def test_source_id_distinguishes_transcripts_with_the_same_timestamp(self):
+        payload = {
+            "type": "Results",
+            "is_final": True,
+            "start": 1.5,
+            "duration": 2.0,
+            "channel": {"alternatives": [{"transcript": "first transcript"}]},
+        }
+
+        first_source_id = parse_deepgram_payload(payload, source_id_prefix="s1")[0].source_id
+        repeated_source_id = parse_deepgram_payload(payload, source_id_prefix="s1")[0].source_id
+        payload["channel"]["alternatives"][0]["transcript"] = "second transcript"
+        second_source_id = parse_deepgram_payload(payload, source_id_prefix="s1")[0].source_id
+
+        self.assertEqual(first_source_id, repeated_source_id)
+        self.assertNotEqual(first_source_id, second_source_id)
+
     def test_non_json_payload_can_be_ignored_by_caller(self):
         payload = json.loads('{"type":"Metadata"}')
 
