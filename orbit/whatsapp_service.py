@@ -889,7 +889,7 @@ class OrbitWhatsAppService:
     def _build_transcript_source_chunks(self, state):
         chunks = []
         for segment in state.live_transcript_segments:
-            text = (segment.memory_text or segment.clean_text or segment.raw_text or "").strip()
+            text = (segment.clean_text or segment.raw_text or "").strip()
             if not text:
                 continue
 

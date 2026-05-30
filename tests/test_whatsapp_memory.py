@@ -397,6 +397,29 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(store.transcript_save_calls), 1)
         self.assertEqual(store.transcript_save_calls[0][0], "source-1")
 
+    async def test_build_transcript_source_chunks_prefers_clean_text(self):
+        service = build_service()
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            live_transcript_segments=[
+                TranscriptSegment(
+                    source_id="s1",
+                    raw_text="Meet abc-defg-hij transcript - 00:00:01-00:00:02: Hello.",
+                    clean_text="Hello.",
+                    memory_text="Meet abc-defg-hij transcript - 00:00:01-00:00:02: Hello.",
+                )
+            ],
+        )
+
+        chunks = service._build_transcript_source_chunks(state)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0]["text"], "Hello.")
+        self.assertEqual(chunks[0]["metadata"]["memory_text"], "Meet abc-defg-hij transcript - 00:00:01-00:00:02: Hello.")
+
     async def test_new_resets_dialogue_without_stopping_meetings(self):
         service = build_service()
         state = MeetingState(
