@@ -924,6 +924,11 @@ class OrbitWhatsAppService:
                     source_id=source_id,
                     decisions=output_json.get("decisions"),
                 )
+                action_items_inserted = await store.createActionItemsFromExtraction(
+                    meeting_id=meeting_id,
+                    source_id=source_id,
+                    action_items=output_json.get("action_items"),
+                )
                 if not skip_status_updates:
                     await store.update_meeting_status(
                         meeting_id,
@@ -938,6 +943,7 @@ class OrbitWhatsAppService:
                     "status": "success",
                     "output_json": output_json,
                     "decisions_inserted": decisions_inserted,
+                    "action_items_inserted": action_items_inserted,
                 }
 
             extraction_prompt = MEETING_EXTRACT_PROMPT.format(transcript=transcript)
@@ -969,6 +975,11 @@ class OrbitWhatsAppService:
                 source_id=source_id,
                 decisions=output_json.get("decisions"),
             )
+            action_items_inserted = await store.createActionItemsFromExtraction(
+                meeting_id=meeting_id,
+                source_id=source_id,
+                action_items=output_json.get("action_items"),
+            )
 
             if not skip_status_updates:
                 await store.update_meeting_status(
@@ -984,6 +995,7 @@ class OrbitWhatsAppService:
                 "status": "success",
                 "output_json": output_json,
                 "decisions_inserted": decisions_inserted,
+                "action_items_inserted": action_items_inserted,
             }
         except Exception as error:
             error_message = str(error)

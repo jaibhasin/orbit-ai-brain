@@ -103,6 +103,7 @@ class FakeMeetingStore:
         self.fail_save_chunks = False
         self.extraction_runs = []
         self.decisions = []
+        self.action_items = []
         self.source_chunks_for_id = {}
         self.meetings_lookup = {}
 
@@ -323,6 +324,106 @@ class FakeMeetingStore:
             inserted += 1
 
         return inserted
+
+    async def create_action_item(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        task=None,
+        owner_text=None,
+        due_date=None,
+        status=None,
+        confidence=None,
+    ):
+        if not meeting_id or not source_id:
+            return None
+
+        if not task:
+            return None
+
+        action_id = f"action-{len(self.action_items) + 1}"
+        self.action_items.append(
+            {
+                "id": action_id,
+                "meeting_id": meeting_id,
+                "source_id": source_id,
+                "task": task,
+                "owner_text": owner_text,
+                "due_date": due_date,
+                "status": status,
+                "confidence": confidence,
+            }
+        )
+        return action_id
+
+    async def createActionItem(self, payload):
+        return await self.create_action_item(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            task=payload.get("task") or payload.get("task_text") or payload.get("text"),
+            owner_text=payload.get("ownerText") or payload.get("owner_text") or payload.get("owner"),
+            due_date=payload.get("dueDate") or payload.get("due_date"),
+            status=payload.get("status", "open"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createActionItemsFromExtraction(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        action_items=None,
+    ):
+        self.action_items = [
+            item
+            for item in self.action_items
+            if item.get("meeting_id") != meeting_id
+        ]
+
+        if not isinstance(action_items, list):
+            return 0
+
+        inserted = 0
+        for item in action_items:
+            task = (
+                (item.get("task") or item.get("task_text") or item.get("taskText") or "").strip()
+                if isinstance(item, dict)
+                else ""
+            )
+            if not task:
+                continue
+
+            await self.create_action_item(
+                meeting_id=meeting_id,
+                source_id=source_id,
+                task=task,
+                owner_text=(item.get("ownerText") or item.get("owner_text") or item.get("owner") or "").strip()
+                if isinstance(item, dict)
+                and (item.get("ownerText") or item.get("owner_text") or item.get("owner")) is not None
+                else None,
+                due_date=(item.get("dueDate") or item.get("due_date") or "").strip()
+                if isinstance(item, dict)
+                and (item.get("dueDate") or item.get("due_date")) is not None
+                else None,
+                status=(item.get("status") or "open") if isinstance(item, dict) else "open",
+                confidence=item.get("confidence") if isinstance(item, dict) else None,
+            )
+            inserted += 1
+
+        return inserted
+
+    async def get_action_items_by_meeting_id(self, meeting_id):
+        return [item for item in self.action_items if item.get("meeting_id") == meeting_id]
+
+    async def getActionItemsByMeetingId(self, meeting_id):
+        return await self.get_action_items_by_meeting_id(meeting_id)
+
+    async def get_recent_action_items(self, limit=20):
+        return list(reversed(self.action_items))[:limit]
+
+    async def getRecentActionItems(self, limit=20):
+        return await self.get_recent_action_items(limit=limit)
 
     async def get_decisions_by_meeting_id(self, meeting_id):
         return [decision for decision in self.decisions if decision.get("meeting_id") == meeting_id]
@@ -664,6 +765,49 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.decisions[0]["decision_text"], "The team decided to delay launch by one week.")
         self.assertEqual(store.decisions[1]["decision_text"], "Close pending tasks before launch.")
         self.assertEqual(store.decisions[1]["title"], "")
+
+    async def test_run_meeting_extraction_persists_action_items(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "text": "Payments are still failing.",
+                },
+            ]
+        }
+        service = build_service(
+            memory=FakeMemory(),
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Launch update","summary_long":"Aman said launch and Ravi reported payments issue.","decisions":[],"action_items":[{"task":"Prepare launch checklist","ownerText":"PM","dueDate":"2026-06-03","confidence":0.71},{"due_date":"2026-06-04","owner":"Ops","task":"Schedule launch rehearsal","dueDate":"2026-06-05"},{"task":" ","ownerText":"PM"}],"risks":[],"open_questions":[],"durable_memories":[]}'
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result.get("action_items_inserted"), 2)
+        self.assertEqual(len(store.action_items), 2)
+        self.assertEqual(store.action_items[0]["task"], "Prepare launch checklist")
+        self.assertEqual(store.action_items[0]["owner_text"], "PM")
+        self.assertEqual(store.action_items[0]["due_date"], "2026-06-03")
+        self.assertEqual(store.action_items[0]["status"], "open")
+        self.assertEqual(store.action_items[0]["confidence"], 0.71)
+        self.assertEqual(store.action_items[1]["task"], "Schedule launch rehearsal")
+        self.assertEqual(store.action_items[1]["owner_text"], "Ops")
 
     async def test_run_meeting_extraction_success(self):
         store = FakeMeetingStore()

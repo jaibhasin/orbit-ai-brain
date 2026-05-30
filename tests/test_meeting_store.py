@@ -131,8 +131,10 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS source_chunks", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS extraction_runs", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS decisions", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS action_items", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_decisions_meeting_id", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE INDEX IF NOT EXISTS idx_action_items_meeting_id", MEETING_SCHEMA_SQL)
 
     async def test_save_source_chunks_inserts_text_with_order_and_metadata(self):
         cursor = FakeCursor()
@@ -329,6 +331,96 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.executions[1][1][6], 0.91)
         self.assertEqual(cursor.executions[2][1][2], "Text key fallback")
         self.assertEqual(cursor.executions[2][1][3], "Use the transcript text field.")
+
+    async def test_create_action_item_inserts_trimmed_fields(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "item-1"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        item_id = await store.create_action_item(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            task="  Send invoice by Friday  ",
+            owner_text="  PM  ",
+            due_date="  2026-06-01  ",
+            status="  in_progress ",
+            confidence="0.71",
+        )
+
+        self.assertEqual(item_id, "item-1")
+        self.assertIn("INSERT INTO action_items", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][2], "Send invoice by Friday")
+        self.assertEqual(cursor.executions[0][1][3], "PM")
+        self.assertEqual(cursor.executions[0][1][4], "2026-06-01")
+        self.assertEqual(cursor.executions[0][1][5], "in_progress")
+        self.assertEqual(cursor.executions[0][1][6], 0.71)
+
+    async def test_createActionItemsFromExtraction_is_idempotent_and_skips_invalid(self):
+        cursor = FakeCursor(
+            fetchone_results=[{"id": "item-1"}, {"id": "item-2"}]
+        )
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createActionItemsFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            action_items=[
+                {
+                    "task": "Follow up with finance.",
+                    "ownerText": "PM",
+                    "dueDate": "2026-06-02",
+                    "status": "open",
+                    "confidence": "0.66",
+                },
+                {
+                    "ownerText": "PM",
+                    "dueDate": "2026-06-03",
+                    "status": "open",
+                },
+                {
+                    "task": "  ",
+                    "ownerText": "PM",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertIn("DELETE FROM action_items", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][0], "meeting-1")
+        self.assertIn("INSERT INTO action_items", cursor.executions[1][0])
+
+    async def test_createActionItemsFromExtraction_accepts_owner_and_due_fallbacks(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "item-1"}, {"id": "item-2"}, {"id": "item-3"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createActionItemsFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            action_items=[
+                {
+                    "task": "Prepare demo",
+                    "owner": "Product Manager",
+                    "due": "2026-07-01",
+                },
+                {
+                    "task": "Email updates",
+                    "owner_text": "Ops",
+                    "due_date": "2026-07-02",
+                },
+                {
+                    "task": "Legacy keys",
+                    "ownerText": "Finance",
+                    "dueDate": "2026-07-03",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 3)
+        self.assertEqual(cursor.executions[1][1][3], "Product Manager")
+        self.assertIsNone(cursor.executions[1][1][4])
+        self.assertEqual(cursor.executions[2][1][3], "Ops")
+        self.assertEqual(cursor.executions[2][1][4], "2026-07-02")
+        self.assertEqual(cursor.executions[3][1][3], "Finance")
+        self.assertEqual(cursor.executions[3][1][4], "2026-07-03")
 
     async def test_get_decisions_by_meeting_id(self):
         cursor = FakeCursor(
