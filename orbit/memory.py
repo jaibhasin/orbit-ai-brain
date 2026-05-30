@@ -86,7 +86,7 @@ class DisabledMemoryService:
 def build_memory_service(openai_client: AsyncOpenAI, answer_model: str) -> MemoryService:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
-        log("DATABASE_URL is not set. Persistent memory is disabled.")
+        log("DATABASE_URL is not set. Persistent memory is disabled.", level="important")
         return DisabledMemoryService()
 
     from orbit.postgres_memory import PostgresMemoryService

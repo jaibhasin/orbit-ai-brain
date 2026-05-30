@@ -71,7 +71,7 @@ class LiveSTTSession:
         assert self.transcriber is not None
         await self.transcriber.connect()
         self.receive_task = asyncio.create_task(self._receive_loop())
-        log("Live STT Deepgram stream started.", self.state.session_id)
+        log("Live STT Deepgram stream started.", self.state.session_id, level="important")
 
     async def send_audio(self, chunk: bytes) -> None:
         if self.closed:
@@ -101,6 +101,7 @@ class LiveSTTSession:
         log(
             f"Deepgram final transcript received: {_format_segments_for_log(raw_segments, 'raw_text')}",
             self.state.session_id,
+            level="debug",
         )
         attributed_segments = merge_caption_speakers(raw_segments, self.captions)
         normalized_segments = normalize_transcript_segments(
@@ -108,12 +109,17 @@ class LiveSTTSession:
             attributed_segments,
         )
         if not normalized_segments:
-            log("Deepgram final transcript dropped during normalization.", self.state.session_id)
+            log(
+                "Deepgram final transcript dropped during normalization.",
+                self.state.session_id,
+                level="debug",
+            )
             return
 
         log(
             f"Normalized transcript segment(s): {_format_segments_for_log(normalized_segments, 'clean_text')}",
             self.state.session_id,
+            level="debug",
         )
         self.state.live_transcript_segments.extend(normalized_segments)
         self._trim_live_transcript_buffer()
@@ -132,6 +138,7 @@ class LiveSTTSession:
             log(
                 f"Transcript text persistence deferred for {len(segments)} segment(s): {error}",
                 self.state.session_id,
+                level="error",
             )
             return
 
@@ -141,6 +148,7 @@ class LiveSTTSession:
             f"Stored {len(segments)} normalized transcript segment(s) through "
             f"{type(self.memory).__name__}.",
             self.state.session_id,
+            level="debug",
         )
         self.final_segments_recorded += len(segments)
 
@@ -175,12 +183,13 @@ class LiveSTTSession:
             except asyncio.CancelledError:
                 pass
         if self.audio_chunks_received == 0:
-            log("Live STT stream closed without receiving audio chunks.", self.state.session_id)
+            log("Live STT stream closed without receiving audio chunks.", self.state.session_id, level="important")
         if self.pending_segments:
             log(
                 f"Live STT stream closed with {len(self.pending_segments)} transcript segment(s) "
                 "still queued for persistence.",
                 self.state.session_id,
+                level="important",
             )
 
     async def _receive_loop(self) -> None:
@@ -192,7 +201,7 @@ class LiveSTTSession:
             raise
         except Exception as error:
             self.last_error = str(error)
-            log(f"Live STT receive loop failed: {error}", self.state.session_id)
+            log(f"Live STT receive loop failed: {error}", self.state.session_id, level="error")
 
     def _default_transcriber_factory(self, audio_format: LiveAudioFormat):
         return DeepgramLiveTranscriber(

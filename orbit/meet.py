@@ -14,6 +14,7 @@ from orbit.caption_attribution import CaptionSnippet
 from orbit.core import (
     CONVERSATION_DIR,
     DEBUG_DIR,
+    configure_dependency_logging,
     ensure_browser_use_runtime,
     env_bool,
     env_int,
@@ -73,7 +74,7 @@ def build_browser(Browser, session_id=None):
     extension_path = os.environ.get("ORBIT_CHROME_EXTENSION_PATH", "extension/orbit-audio-capture")
 
     if cdp_url:
-        log(f"Connecting Browser Use to existing Chrome over CDP: {cdp_url}", session_id)
+        log(f"Connecting Browser Use to existing Chrome over CDP: {cdp_url}", session_id, level="debug")
         return Browser(
             cdp_url=cdp_url,
             keep_alive=True,
@@ -90,15 +91,16 @@ def build_browser(Browser, session_id=None):
         )
 
     if use_system_chrome:
-        log("Using Browser Use with your installed Chrome profile.", session_id)
+        log("Using Browser Use with your installed Chrome profile.", session_id, level="debug")
         if browser_args:
             log(
                 "Official Chrome 137+ ignores command-line unpacked-extension loading. "
                 "Load the Orbit extension manually from chrome://extensions before joining.",
                 session_id,
+                level="debug",
             )
         if profile_directory:
-            log(f"Requested Chrome profile: {profile_directory}", session_id)
+            log(f"Requested Chrome profile: {profile_directory}", session_id, level="debug")
             return Browser.from_system_chrome(
                 profile_directory=profile_directory,
                 keep_alive=True,
@@ -106,9 +108,9 @@ def build_browser(Browser, session_id=None):
             )
         return Browser.from_system_chrome(keep_alive=True, args=browser_args or None)
 
-    log("Using Browser Use managed browser session for guest join flow.", session_id)
+    log("Using Browser Use managed browser session for guest join flow.", session_id, level="debug")
     if browser_args:
-        log(f"Loading Orbit audio capture extension: {resolved_extension_path}", session_id)
+        log(f"Loading Orbit audio capture extension: {resolved_extension_path}", session_id, level="debug")
     return Browser(
         headless=headless,
         keep_alive=True,
@@ -340,7 +342,7 @@ async def is_chat_panel_open(page):
 
 async def open_chat_panel(page, session_id=None):
     if await is_chat_panel_open(page):
-        log("Meet chat panel is already open.", session_id)
+        log("Meet chat panel is already open.", session_id, level="debug")
         return True
 
     click_result = await evaluate_json(
@@ -384,22 +386,26 @@ async def open_chat_panel(page, session_id=None):
     )
 
     if click_result and click_result["clicked"]:
-        log(f"Opened chat panel with selector match: {click_result['label']}", session_id)
+        log(
+            f"Opened chat panel with selector match: {click_result['label']}",
+            session_id,
+            level="debug",
+        )
         for _ in range(5):
             await asyncio.sleep(0.5)
             if await is_chat_panel_open(page):
                 return True
     else:
-        log("Chat button not found by selector. Trying keyboard shortcuts.", session_id)
+        log("Chat button not found by selector. Trying keyboard shortcuts.", session_id, level="debug")
         for key_combo in ("Control+Alt+C", "Meta+Alt+C"):
             try:
                 await page.press(key_combo)
                 await asyncio.sleep(1)
                 if await is_chat_panel_open(page):
-                    log(f"Opened chat panel with keyboard shortcut: {key_combo}", session_id)
+                    log(f"Opened chat panel with keyboard shortcut: {key_combo}", session_id, level="debug")
                     return True
             except Exception as error:
-                log(f"Chat shortcut {key_combo} failed: {error}", session_id)
+                log(f"Chat shortcut {key_combo} failed: {error}", session_id, level="debug")
 
     await asyncio.sleep(1)
     return await is_chat_panel_open(page)
@@ -606,10 +612,10 @@ async def send_introduction(page, state):
     sent = await send_chat_message(page, intro_message)
     if sent:
         state.introduction_sent = True
-        log(f"Sent meeting introduction: {intro_message}", state.session_id)
+        log(f"Sent meeting introduction: {intro_message}", state.session_id, level="debug")
         return True
 
-    log("Could not send the meeting introduction message.", state.session_id)
+    log("Could not send the meeting introduction message.", state.session_id, level="debug")
     return False
 
 
@@ -644,10 +650,18 @@ async def enable_captions(page, session_id=None):
         }""",
     )
     if result and result.get("clicked"):
-        log(f"Requested Meet captions with selector match: {result.get('label')}", session_id)
+        log(
+            f"Requested Meet captions with selector match: {result.get('label')}",
+            session_id,
+            level="debug",
+        )
         return True
 
-    log("Could not find a visible Meet captions control. Caption attribution will remain disabled.", session_id)
+    log(
+        "Could not find a visible Meet captions control. Caption attribution will remain disabled.",
+        session_id,
+        level="debug",
+    )
     return False
 
 
@@ -732,10 +746,10 @@ async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
             payload,
         )
         state.live_stt_status_detail = "Extension capture start message posted."
-        log("Posted Orbit extension capture start message.", state.session_id)
+        log("Posted Orbit extension capture start message.", state.session_id, level="debug")
     except Exception as error:
         state.live_stt_status_detail = f"Extension capture start message failed: {error}"
-        log(state.live_stt_status_detail, state.session_id)
+        log(state.live_stt_status_detail, state.session_id, level="error")
         return False
 
     button_clicked = False
@@ -757,11 +771,11 @@ async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
             if click_result and click_result["found"]:
                 mouse = await page.mouse
                 await mouse.click(int(click_result["x"]), int(click_result["y"]))
-                log("Clicked the injected Orbit audio capture button.", state.session_id)
+                log("Clicked the injected Orbit audio capture button.", state.session_id, level="debug")
                 button_clicked = True
                 break
         except Exception as error:
-            log(f"Orbit audio capture button click failed: {error}", state.session_id)
+            log(f"Orbit audio capture button click failed: {error}", state.session_id, level="debug")
             break
         await asyncio.sleep(0.2)
 
@@ -779,16 +793,16 @@ async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
                     }""",
                 )
             except Exception as error:
-                log(f"Orbit audio capture button status check failed: {error}", state.session_id)
+                log(f"Orbit audio capture button status check failed: {error}", state.session_id, level="debug")
                 break
             button_status = button_status or {}
             label = str(button_status.get("label") or "")
             if button_status.get("disabled") or "audio active" in label.lower():
                 state.live_stt_status_detail = "Orbit extension accepted the audio capture request."
-                log(state.live_stt_status_detail, state.session_id)
+                log(state.live_stt_status_detail, state.session_id, level="debug")
                 return True
             if "use alt+shift+o" in label.lower():
-                log("Orbit audio button requested extension shortcut fallback.", state.session_id)
+                log("Orbit audio button requested extension shortcut fallback.", state.session_id, level="debug")
                 break
             await asyncio.sleep(0.2)
 
@@ -796,11 +810,11 @@ async def trigger_extension_audio_capture(page, state, audio_stream_ws_url):
     try:
         await page.press(shortcut)
         state.live_stt_status_detail = f"Tried Orbit extension activation shortcut: {shortcut}"
-        log(f"Tried Orbit extension activation shortcut: {shortcut}", state.session_id)
+        log(f"Tried Orbit extension activation shortcut: {shortcut}", state.session_id, level="debug")
         return True
     except Exception as error:
         state.live_stt_status_detail = f"Orbit extension activation shortcut failed: {error}"
-        log(state.live_stt_status_detail, state.session_id)
+        log(state.live_stt_status_detail, state.session_id, level="error")
         return False
 
 
@@ -837,6 +851,7 @@ def grant_speak_permission(state, message):
         "Speak permission granted by chat mention "
         f"(pending={state.pending_speak_permissions}): {message.raw_text}",
         state.session_id,
+        level="debug",
     )
 
 
@@ -852,7 +867,7 @@ async def process_messages(page, state, messages, source, callbacks=None):
     for message in new_messages:
         state.seen_message_fingerprints.add(message.fingerprint)
         if is_orbit_authored_message(state, message):
-            log(f"Ignoring Orbit-authored chat message ({source}).", state.session_id)
+            log(f"Ignoring Orbit-authored chat message ({source}).", state.session_id, level="debug")
             continue
 
         state.captured_messages.append(message)
@@ -860,6 +875,7 @@ async def process_messages(page, state, messages, source, callbacks=None):
             f"New chat message ({source}) from "
             f"{message.author or 'unknown'}: {message.raw_text}",
             state.session_id,
+            level="debug",
         )
         await emit_chat_message(callbacks, state, message, source)
         if message_mentions_orbit(message):
@@ -868,9 +884,9 @@ async def process_messages(page, state, messages, source, callbacks=None):
             if reply:
                 sent = await send_chat_message(page, reply)
                 if sent:
-                    log(f"Sent Orbit mention reply: {reply}", state.session_id)
+                    log(f"Sent Orbit mention reply: {reply}", state.session_id, level="debug")
                 else:
-                    log("Could not send Orbit mention reply.", state.session_id)
+                    log("Could not send Orbit mention reply.", state.session_id, level="debug")
 
 
 async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
@@ -880,7 +896,11 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
     chat_open = await open_chat_panel(page, state.session_id)
     state.chat_monitor_available = chat_open
     if not chat_open:
-        log("Meet chat could not be opened. Monitoring disabled for this session.", state.session_id)
+        log(
+            "Meet chat could not be opened. Monitoring disabled for this session.",
+            state.session_id,
+            level="important",
+        )
         await emit_status(
             callbacks,
             state,
@@ -890,7 +910,11 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
     else:
         await send_introduction(page, state)
         initial_messages = await collect_visible_chat_messages(page)
-        log(f"Scanned {len(initial_messages)} visible chat messages at monitor start.", state.session_id)
+        log(
+            f"Scanned {len(initial_messages)} visible chat messages at monitor start.",
+            state.session_id,
+            level="debug",
+        )
         await process_messages(page, state, initial_messages, "startup", callbacks)
 
     deadline = asyncio.get_running_loop().time() + (wait_after_run_ms / 1000)
@@ -898,7 +922,7 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
     while asyncio.get_running_loop().time() < deadline:
         if state.stop_requested:
             state.leave_reason = state.stop_reason or "Orbit was asked to stop monitoring this meeting."
-            log(state.leave_reason, state.session_id)
+            log(state.leave_reason, state.session_id, level="important")
             break
         now = asyncio.get_running_loop().time()
         if now >= next_participant_check_at:
@@ -907,16 +931,16 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
                 participant_count = await get_participant_count(page)
                 if should_leave_when_only_orbit_remains(state, participant_count):
                     state.leave_reason = "Orbit is the only participant left in the meeting."
-                    log(state.leave_reason, state.session_id)
+                    log(state.leave_reason, state.session_id, level="important")
                     break
             except Exception as error:
-                log(f"Participant count check failed: {error}", state.session_id)
+                log(f"Participant count check failed: {error}", state.session_id, level="debug")
         if chat_open:
             try:
                 messages = await collect_visible_chat_messages(page)
                 await process_messages(page, state, messages, "poll", callbacks)
             except Exception as error:
-                log(f"Chat polling failed: {error}", state.session_id)
+                log(f"Chat polling failed: {error}", state.session_id, level="debug")
         if state.live_stt_available:
             try:
                 captions = await collect_visible_captions(page)
@@ -930,7 +954,7 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
                 if new_captions:
                     await emit_captions(callbacks, state, new_captions)
             except Exception as error:
-                log(f"Caption scraping failed: {error}", state.session_id)
+                log(f"Caption scraping failed: {error}", state.session_id, level="debug")
         await asyncio.sleep(POLL_INTERVAL_MS / 1000)
 
     if state.leave_reason is None:
@@ -939,10 +963,12 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
         "Chat monitor finished with "
         f"{state.pending_speak_permissions} pending speak permission(s).",
         state.session_id,
+        level="info",
     )
 
 
 async def run_meeting_session(config, callbacks=None, state=None):
+    configure_dependency_logging()
     load_dotenv()
 
     if state is None:
@@ -958,15 +984,16 @@ async def run_meeting_session(config, callbacks=None, state=None):
     session_gif_path = DEBUG_DIR / f"browser-use-meet-{config.session_id}.gif"
 
     from browser_use import Agent, Browser, ChatOpenAI
+    configure_dependency_logging()
 
     llm = ChatOpenAI(model=config.model_name)
     browser = None
     history = None
 
     await emit_status(callbacks, state, "starting_join", f"Opening Meet URL: {config.meet_url}")
-    log(f"Opening Meet URL: {config.meet_url}", state.session_id)
-    log(f"Model: {config.model_name}", state.session_id)
-    log(f"Agent max steps: {config.max_steps}", state.session_id)
+    log(f"Opening Meet URL: {config.meet_url}", state.session_id, level="important")
+    log(f"Model: {config.model_name}", state.session_id, level="debug")
+    log(f"Agent max steps: {config.max_steps}", state.session_id, level="debug")
 
     try:
         browser = build_browser(Browser, state.session_id)
@@ -981,22 +1008,26 @@ async def run_meeting_session(config, callbacks=None, state=None):
         )
 
         history = await agent.run(max_steps=config.max_steps)
-        log(f"Agent finished after {history.number_of_steps()} steps.", state.session_id)
+        log(f"Agent finished after {history.number_of_steps()} steps.", state.session_id, level="debug")
 
         final_result = history.final_result()
         if final_result:
             state.browser_use_final_result = final_result
-            log(f"Final result: {final_result}", state.session_id)
+            log(f"Final result: {final_result}", state.session_id, level="debug")
 
         if history.has_errors():
             state.browser_use_had_errors = True
-            log("Agent reported one or more step errors. Check debug/browser-use.", state.session_id)
+            log(
+                "Agent reported one or more step errors. Check debug/browser-use.",
+                state.session_id,
+                level="debug",
+            )
 
         state.browser_use_success = history.is_successful()
         if state.browser_use_success:
-            log("Browser Use marked the run as successful.", state.session_id)
+            log("Browser Use marked the run as successful.", state.session_id, level="info")
         else:
-            log("Browser Use did not mark the run as successful.", state.session_id)
+            log("Browser Use did not mark the run as successful.", state.session_id, level="important")
 
         page = await browser.get_current_page()
         if not page:
@@ -1005,6 +1036,7 @@ async def run_meeting_session(config, callbacks=None, state=None):
             log(
                 f"{detail} Keeping browser open for {config.wait_after_join_ms // 1000} seconds.",
                 state.session_id,
+                level="important",
             )
             await asyncio.sleep(config.wait_after_join_ms / 1000)
             return state
@@ -1014,7 +1046,7 @@ async def run_meeting_session(config, callbacks=None, state=None):
             state.joined_at = now_iso()
             detail = f"Orbit joined the meeting successfully. Monitoring chat for {config.wait_after_join_ms // 1000} seconds."
             await emit_status(callbacks, state, "joined", detail)
-            log(detail, state.session_id)
+            log(detail, state.session_id, level="important")
             if config.live_stt_enabled:
                 state.live_stt_requested = True
                 await enable_captions(page, state.session_id)
@@ -1045,23 +1077,28 @@ async def run_meeting_session(config, callbacks=None, state=None):
             log(
                 f"{detail} Keeping browser open for {config.wait_after_join_ms // 1000} seconds.",
                 state.session_id,
+                level="important",
             )
             await asyncio.sleep(config.wait_after_join_ms / 1000)
     except Exception as error:
         state.last_error = str(error)
         await emit_status(callbacks, state, "error", str(error))
-        log(f"Meeting session failed: {error}", state.session_id)
+        log(f"Meeting session failed: {error}", state.session_id, level="error")
     finally:
         state.finished_at = now_iso()
         finalize_meeting_status(state)
         if state.permission_events:
-            log(f"Recorded {len(state.permission_events)} permission event(s).", state.session_id)
+            log(
+                f"Recorded {len(state.permission_events)} permission event(s).",
+                state.session_id,
+                level="debug",
+            )
         if browser is not None:
-            log("Closing browser.", state.session_id)
+            log("Closing browser.", state.session_id, level="debug")
             try:
                 await browser.kill()
             except Exception as error:
-                log(f"Browser shutdown failed: {error}", state.session_id)
+                log(f"Browser shutdown failed: {error}", state.session_id, level="error")
         await emit_finished(callbacks, state)
 
     return state

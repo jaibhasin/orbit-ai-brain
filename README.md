@@ -375,6 +375,7 @@ Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
 | `ORBIT_ORGANIZATION_ID` | Stable organization scope for stored memory, default `default` |
 | `ORBIT_MEMORY_SEARCH_LIMIT` | Number of memory chunks retrieved for RAG |
 | `ORBIT_MEMORY_SIMILARITY_THRESHOLD` | Minimum cosine-similarity score for memory retrieval, default `0.35` |
+| `ORBIT_LOG_LEVEL` | Log verbosity. One of `important` (default), `info`, `debug`, `error`, `quiet`. |
 | `GMEET_DISPLAY_NAME` | Name Orbit uses in Google Meet |
 | `GMEET_WAIT_AFTER_JOIN_MS` | Maximum monitoring duration after joining, default `300000` (5 minutes). Orbit checks participants every 30 seconds and leaves earlier after other participants depart and it is the only participant left. |
 | `GMEET_USE_SYSTEM_CHROME` | Use installed Chrome profile instead of managed browser |

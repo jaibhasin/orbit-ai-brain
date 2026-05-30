@@ -7,6 +7,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+import logging
 
 
 ENV_PATH = Path(".env")
@@ -15,6 +16,81 @@ CONVERSATION_DIR = DEBUG_DIR / "browser-use"
 BROWSER_USE_VENV_DIR = Path(".venv-browser-use")
 BROWSER_USE_SENTINEL = "BROWSER_USE_PYTHON_BOOTSTRAPPED"
 MEET_CODE_PATTERN = re.compile(r"meet\.google\.com/([a-z0-9-]+)", re.IGNORECASE)
+LOG_LEVELS = {
+    "quiet": 0,
+    "error": 10,
+    "important": 20,
+    "info": 30,
+    "debug": 40,
+}
+
+
+def _normalize_log_level(value):
+    if value is None:
+        return "important"
+    normalized = str(value).strip().lower()
+    return normalized if normalized in LOG_LEVELS else "important"
+
+
+def _current_log_level():
+    return LOG_LEVELS[_normalize_log_level(os.environ.get("ORBIT_LOG_LEVEL", "important"))]
+
+
+def _log_level_value(level):
+    return LOG_LEVELS[_normalize_log_level(level)]
+
+
+def _third_party_logger_names():
+    return (
+        "Agent",
+        "requests",
+        "browser_use",
+        "service",
+        "tools",
+        "twilio",
+        "twilio.http_client",
+        "openai",
+        "httpx",
+        "urllib3",
+        "playwright",
+    )
+
+
+def _third_party_level_from_orbit():
+    orbit_level = _current_log_level()
+    if orbit_level <= LOG_LEVELS["error"]:
+        return logging.ERROR
+    if orbit_level == LOG_LEVELS["debug"]:
+        return logging.DEBUG
+    return logging.WARNING
+
+
+def configure_dependency_logging():
+    target = _third_party_level_from_orbit()
+    noisy_names = _third_party_logger_names()
+    logger_dict = logging.root.manager.loggerDict
+
+    root_logger = logging.getLogger()
+    if root_logger.level > target:
+        root_logger.setLevel(target)
+
+    for logger_name in list(logger_dict):
+        if any(
+            logger_name == prefix or logger_name.startswith(f"{prefix}.")
+            for prefix in noisy_names
+        ):
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(target)
+            logger.propagate = True
+            for handler in list(logger.handlers):
+                logger.removeHandler(handler)
+
+    for logger_name in noisy_names:
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(target)
+        logger.propagate = True
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
 
 
 def load_dotenv():
@@ -55,7 +131,10 @@ def env_float(name, default):
     return float(value)
 
 
-def log(message, session_id=None):
+def log(message, session_id=None, level="info"):
+    if level != "error" and _log_level_value(level) > _current_log_level():
+        return
+
     prefix = "[browser-use-meet]" if not session_id else f"[browser-use-meet:{session_id}]"
     print(f"{prefix} {message}")
 
@@ -132,7 +211,7 @@ def ensure_browser_use_venv(argv=None, extra_imports=None):
 
     target_python = venv_python_path()
     if not target_python.exists():
-        log(f"Creating Browser Use venv with {supported_python}")
+        log(f"Creating Browser Use venv with {supported_python}", level="debug")
         subprocess.run(
             [supported_python, "-m", "venv", str(BROWSER_USE_VENV_DIR)],
             check=True,
@@ -159,7 +238,7 @@ def ensure_browser_use_venv(argv=None, extra_imports=None):
             f"`{target_python} -m pip install -r requirements.txt` and retry."
         )
 
-    log(f"Re-launching with {target_python}")
+    log(f"Re-launching with {target_python}", level="debug")
     relaunched_env = os.environ.copy()
     relaunched_env[BROWSER_USE_SENTINEL] = "1"
     argv_to_run = list(argv or sys.argv)

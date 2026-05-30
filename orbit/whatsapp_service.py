@@ -8,6 +8,7 @@ from datetime import datetime
 
 from orbit.core import (
     env_int,
+    configure_dependency_logging,
     extract_meeting_code,
     load_dotenv,
     log,
@@ -112,6 +113,7 @@ def format_twiml(message_text):
 class OrbitWhatsAppService:
     def __init__(self):
         load_dotenv()
+        configure_dependency_logging()
 
         self.twilio_account_sid = self._require_env("TWILIO_ACCOUNT_SID")
         self.twilio_auth_token = self._require_env("TWILIO_AUTH_TOKEN")
@@ -147,7 +149,7 @@ class OrbitWhatsAppService:
 
         return os.environ.get(name, default)
 
-    async def handle_incoming_message(self, from_number, body):
+    async def handle_incoming_message(self, from_number, body, profile_name=None):
         if from_number != self.twilio_allowed_from:
             return format_twiml("")
 
@@ -161,7 +163,11 @@ class OrbitWhatsAppService:
         meet_links = extract_meet_links(body)
         if meet_links:
             self.reset_dialogue_history()
-            reply = await self.start_meeting_sessions(meet_links, from_number=from_number)
+            reply = await self.start_meeting_sessions(
+                meet_links,
+                from_number=from_number,
+                profile_name=profile_name,
+            )
             return self._reply_and_record(body, reply)
 
         intent = self.parse_whatsapp_intent(body)
@@ -275,13 +281,17 @@ class OrbitWhatsAppService:
             return await self.answer_live_recall(intent.text, intent.meeting_code)
         return await self.answer_general_question(intent.text)
 
-    async def start_meeting_sessions(self, meet_links, from_number=None):
+    async def start_meeting_sessions(self, meet_links, from_number=None, profile_name=None):
         started = []
         duplicates = []
         rejected = []
 
         for meet_url in meet_links:
-            start_result = await self.start_single_meeting_session(meet_url, from_number=from_number)
+            start_result = await self.start_single_meeting_session(
+                meet_url,
+                from_number=from_number,
+                profile_name=profile_name,
+            )
             if start_result["status"] == "started":
                 started.append(start_result["meeting_code"])
             elif start_result["status"] == "duplicate":
@@ -304,7 +314,7 @@ class OrbitWhatsAppService:
             )
         return " ".join(parts)
 
-    async def start_single_meeting_session(self, meet_url, from_number=None):
+    async def start_single_meeting_session(self, meet_url, from_number=None, profile_name=None):
         meeting_code = extract_meeting_code(meet_url)
 
         async with self.lock:
@@ -314,7 +324,7 @@ class OrbitWhatsAppService:
             if len(self.active_sessions) >= self.max_parallel_meetings:
                 return {"status": "capacity", "meeting_code": meeting_code}
 
-            meeting_id = await self._create_meeting_record(meet_url, from_number)
+            meeting_id = await self._create_meeting_record(meet_url, from_number, profile_name)
             session_id = self.build_session_id(meeting_code)
             config = self.build_session_config(meet_url, session_id)
             state = build_meeting_state(config)
@@ -330,7 +340,7 @@ class OrbitWhatsAppService:
 
             return {"status": "started", "meeting_code": meeting_code}
 
-    async def _create_meeting_record(self, meet_url, from_number):
+    async def _create_meeting_record(self, meet_url, from_number, profile_name=None):
         if not from_number:
             return None
 
@@ -341,6 +351,7 @@ class OrbitWhatsAppService:
         try:
             person_id = await store.find_or_create_person_by_phone(
                 self._normalize_person_phone(from_number),
+                name=profile_name,
             )
             source_id = await store.create_source(
                 "gmeet",
@@ -353,7 +364,7 @@ class OrbitWhatsAppService:
                 requested_by_person_id=person_id,
             )
         except Exception as error:
-            log(f"Failed to create meeting persistence row for {meet_url}: {error}")
+            log(f"Failed to create meeting persistence row for {meet_url}: {error}", level="error")
             return None
 
     @staticmethod
@@ -517,7 +528,7 @@ class OrbitWhatsAppService:
                 ],
             )
         except Exception as error:
-            log(f"Live recall answer failed: {error}", state.session_id)
+            log(f"Live recall answer failed: {error}", state.session_id, level="error")
             return "I could not answer from the live transcript right now because the model call failed."
 
         content = response.choices[0].message.content if response.choices else ""
@@ -734,19 +745,20 @@ class OrbitWhatsAppService:
             log(
                 f"Failed to update persistent meeting status for {active.meeting_id}: {error}",
                 state.session_id,
+                level="error",
             )
 
     async def handle_chat_message(self, state: MeetingState, message: ChatMessage, source: str):
         try:
             await self.memory.record_meeting_chat(state, message)
         except Exception as error:
-            log(f"Memory write failed for Meet {state.meeting_code}: {error}", state.session_id)
+            log(f"Memory write failed for Meet {state.meeting_code}: {error}", state.session_id, level="error")
 
     async def handle_captions(self, state: MeetingState, captions):
         try:
             await self.live_stt.add_captions(state, captions)
         except Exception as error:
-            log(f"Caption attribution buffer failed for Meet {state.meeting_code}: {error}", state.session_id)
+            log(f"Caption attribution buffer failed for Meet {state.meeting_code}: {error}", state.session_id, level="error")
 
     async def handle_orbit_mention(self, state: MeetingState, message: ChatMessage):
         question = strip_qna_trigger(message.normalized_text)
@@ -788,7 +800,7 @@ class OrbitWhatsAppService:
                 ],
             )
         except Exception as error:
-            log(f"Meet chat mention answer failed: {error}", state.session_id)
+            log(f"Meet chat mention answer failed: {error}", state.session_id, level="error")
             return "I’m here, but I could not generate an answer right now."
 
         content = response.choices[0].message.content if response.choices else ""
@@ -800,7 +812,7 @@ class OrbitWhatsAppService:
         try:
             await self.memory.finalize_meeting(state)
         except Exception as error:
-            log(f"Memory indexing failed for Meet {state.meeting_code}: {error}", state.session_id)
+            log(f"Memory indexing failed for Meet {state.meeting_code}: {error}", state.session_id, level="error")
 
         if state.joined_at:
             live_stt_summary = ""
@@ -866,8 +878,9 @@ class OrbitWhatsAppService:
         return summary_short, summary_long
 
     async def send_whatsapp_message(self, body):
-        log(f"Sending WhatsApp update: {body}")
+        log(f"Sending WhatsApp update: {body}", level="info")
         try:
+            configure_dependency_logging()
             await asyncio.to_thread(
                 self.twilio_client.messages.create,
                 body=body,
@@ -875,7 +888,7 @@ class OrbitWhatsAppService:
                 to=self.twilio_allowed_from,
             )
         except Exception as error:
-            log(f"WhatsApp send failed: {error}")
+            log(f"WhatsApp send failed: {error}", level="error")
 
     async def answer_question(self, question):
         context_sections = await self.build_meeting_context()
@@ -907,7 +920,7 @@ class OrbitWhatsAppService:
                 ],
             )
         except Exception as error:
-            log(f"WhatsApp Q&A failed: {error}")
+            log(f"WhatsApp Q&A failed: {error}", level="error")
             return "I could not answer that right now because the Q&A model call failed."
 
         content = response.choices[0].message.content if response.choices else ""
@@ -917,7 +930,7 @@ class OrbitWhatsAppService:
         try:
             memory_answer = await self.memory.answer_from_memory(question)
         except Exception as error:
-            log(f"Memory Q&A failed: {error}")
+            log(f"Memory Q&A failed: {error}", level="error")
             memory_answer = MemoryAnswer(
                 "Stored company memory was unavailable for this question.",
                 mode="insufficient_memory",
@@ -967,7 +980,7 @@ class OrbitWhatsAppService:
                 ],
             )
         except Exception as error:
-            log(f"General WhatsApp answer failed: {error}")
+            log(f"General WhatsApp answer failed: {error}", level="error")
             return "I could not answer that right now because the general model call failed."
 
         content = response.choices[0].message.content if response.choices else ""
@@ -1067,6 +1080,10 @@ class OrbitWhatsAppService:
                 elif message_type == "stop":
                     break
         except Exception as error:
-            log(f"Live audio WebSocket failed for Meet {active.state.meeting_code}: {error}", session_id)
+            log(
+                f"Live audio WebSocket failed for Meet {active.state.meeting_code}: {error}",
+                session_id,
+                level="error",
+            )
         finally:
             await self.live_stt.stop(session_id)

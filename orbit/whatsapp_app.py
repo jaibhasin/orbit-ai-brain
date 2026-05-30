@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
 
-from orbit.core import ensure_browser_use_runtime, env_int, load_dotenv
+from orbit.core import ensure_browser_use_runtime, configure_dependency_logging, env_int, log, load_dotenv
 
 ensure_browser_use_runtime(
     "scripts/whatsapp_bot.py",
@@ -45,9 +45,9 @@ def normalize_bind_host(raw_host):
     host = (raw_host or "0.0.0.0").strip()
     if "://" in host:
         parsed_host = urlparse(host).hostname or host
-        print(
-            "ORBIT_WEBHOOK_HOST is a public URL. "
-            f"Binding locally to 0.0.0.0 instead of {parsed_host}."
+        log(
+            f"ORBIT_WEBHOOK_HOST is a public URL. Binding locally to 0.0.0.0 instead of {parsed_host}.",
+            level="debug",
         )
         return "0.0.0.0"
     return host
@@ -87,6 +87,7 @@ async def handle_whatsapp_webhook(
     request: Request,
     From: str = Form(""),
     Body: str = Form(""),
+    ProfileName: str = Form(""),
 ):
     form = await request.form()
     service = request.app.state.orbit_service
@@ -99,7 +100,7 @@ async def handle_whatsapp_webhook(
     ):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
 
-    xml_body = await service.handle_incoming_message(From, Body)
+    xml_body = await service.handle_incoming_message(From, Body, profile_name=ProfileName)
     return TwiMLResponse(content=xml_body)
 
 
@@ -137,10 +138,26 @@ async def api_whatsapp_inbound_webhook(
 
 def main():
     load_dotenv()
+    configure_dependency_logging()
 
     import os
     import uvicorn
 
+    orbit_log_level = (os.environ.get("ORBIT_LOG_LEVEL", "important") or "important").strip().lower()
+    uvicorn_log_level = {
+        "quiet": "critical",
+        "error": "error",
+        "important": "warning",
+        "info": "info",
+        "debug": "debug",
+    }.get(orbit_log_level, "warning")
+
     host = normalize_bind_host(os.environ.get("ORBIT_WEBHOOK_HOST", "0.0.0.0"))
     port = env_int("ORBIT_WEBHOOK_PORT", 8000)
-    uvicorn.run("orbit.whatsapp_app:app", host=host, port=port, reload=False)
+    uvicorn.run(
+        "orbit.whatsapp_app:app",
+        host=host,
+        port=port,
+        reload=False,
+        log_level=uvicorn_log_level,
+    )

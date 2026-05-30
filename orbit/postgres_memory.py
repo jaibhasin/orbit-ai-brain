@@ -147,6 +147,7 @@ class PostgresMemoryService:
         log(
             f"Stored chat message and searchable text chunk for Meet {state.meeting_code}.",
             state.session_id,
+            level="debug",
         )
         await self.retry_memory_chunk_indexing(source_ids=[source_id])
 
@@ -243,6 +244,7 @@ class PostgresMemoryService:
             f"Stored {len(segments)} transcript segment row(s) with raw and normalized text "
             f"for Meet {state.meeting_code}.",
             state.session_id,
+            level="debug",
         )
         await self.retry_memory_chunk_indexing(session_id=state.session_id)
 
@@ -286,6 +288,7 @@ class PostgresMemoryService:
             f"Stored {len(chat_source_ids)} chat memory chunk text row(s) for Meet "
             f"{state.meeting_code}.",
             state.session_id,
+            level="debug",
         )
         await self.retry_memory_chunk_indexing(session_id=state.session_id)
 
@@ -374,6 +377,7 @@ class PostgresMemoryService:
             f"Memory indexing result: {len(indexed)} indexed, {len(failed)} failed "
             f"for organization {self.organization_id}.",
             session_id,
+            level="debug",
         )
         return len(indexed), len(failed)
 
