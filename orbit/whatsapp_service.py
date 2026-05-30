@@ -929,6 +929,11 @@ class OrbitWhatsAppService:
                     source_id=source_id,
                     action_items=output_json.get("action_items"),
                 )
+                memories_inserted = await store.createMemoriesFromExtraction(
+                    meeting_id=meeting_id,
+                    source_id=source_id,
+                    memories=output_json.get("durable_memories") or output_json.get("durableMemories"),
+                )
                 if not skip_status_updates:
                     await store.update_meeting_status(
                         meeting_id,
@@ -944,6 +949,7 @@ class OrbitWhatsAppService:
                     "output_json": output_json,
                     "decisions_inserted": decisions_inserted,
                     "action_items_inserted": action_items_inserted,
+                    "memories_inserted": memories_inserted,
                 }
 
             extraction_prompt = MEETING_EXTRACT_PROMPT.format(transcript=transcript)
@@ -980,6 +986,11 @@ class OrbitWhatsAppService:
                 source_id=source_id,
                 action_items=output_json.get("action_items"),
             )
+            memories_inserted = await store.createMemoriesFromExtraction(
+                meeting_id=meeting_id,
+                source_id=source_id,
+                memories=output_json.get("durable_memories") or output_json.get("durableMemories"),
+            )
 
             if not skip_status_updates:
                 await store.update_meeting_status(
@@ -996,6 +1007,7 @@ class OrbitWhatsAppService:
                 "output_json": output_json,
                 "decisions_inserted": decisions_inserted,
                 "action_items_inserted": action_items_inserted,
+                "memories_inserted": memories_inserted,
             }
         except Exception as error:
             error_message = str(error)
@@ -1086,7 +1098,11 @@ class OrbitWhatsAppService:
             "action_items": OrbitWhatsAppService._coerce_output_list(value.get("action_items")),
             "risks": OrbitWhatsAppService._coerce_output_list(value.get("risks")),
             "open_questions": OrbitWhatsAppService._coerce_output_list(value.get("open_questions")),
-            "durable_memories": OrbitWhatsAppService._coerce_output_list(value.get("durable_memories")),
+            "durable_memories": OrbitWhatsAppService._coerce_output_list(
+                value.get("durable_memories")
+                if "durable_memories" in value
+                else value.get("durableMemories"),
+            ),
         }
 
     @staticmethod

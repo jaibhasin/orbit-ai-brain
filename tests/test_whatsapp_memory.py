@@ -104,6 +104,7 @@ class FakeMeetingStore:
         self.extraction_runs = []
         self.decisions = []
         self.action_items = []
+        self.memories = []
         self.source_chunks_for_id = {}
         self.meetings_lookup = {}
 
@@ -412,6 +413,124 @@ class FakeMeetingStore:
             inserted += 1
 
         return inserted
+
+    async def create_memory(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        memory_type=None,
+        content=None,
+        importance=None,
+        confidence=None,
+    ):
+        if not meeting_id or not source_id:
+            return None
+
+        if not content:
+            return None
+
+        memory_id = f"memory-{len(self.memories) + 1}"
+        self.memories.append(
+            {
+                "id": memory_id,
+                "meeting_id": meeting_id,
+                "source_id": source_id,
+                "memory_type": memory_type,
+                "content": content,
+                "importance": importance,
+                "confidence": confidence,
+            }
+        )
+        return memory_id
+
+    async def createMemory(self, payload):
+        return await self.create_memory(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            memory_type=payload.get("memoryType") or payload.get("memory_type"),
+            content=payload.get("content"),
+            importance=payload.get("importance"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createMemoriesFromExtraction(
+        self,
+        *,
+        meeting_id=None,
+        source_id=None,
+        memories=None,
+    ):
+        self.memories = [
+            memory
+            for memory in self.memories
+            if memory.get("meeting_id") != meeting_id
+        ]
+
+        if not isinstance(memories, list):
+            return 0
+
+        inserted = 0
+        for memory in memories:
+            memory_content = (
+                memory.get("content") if isinstance(memory, dict) else None
+            )
+            if not memory_content or not str(memory_content).strip():
+                # Legacy payloads may use different keys; keep this simple and
+                # strict for tests.
+                continue
+
+            memory_type = (
+                memory.get("memoryType") or memory.get("memory_type") or "important_fact"
+            )
+            importance = memory.get("importance") or "medium"
+            confidence = memory.get("confidence")
+
+            if isinstance(importance, str):
+                importance = importance.lower()
+                if importance not in {"low", "medium", "high"}:
+                    importance = "medium"
+            else:
+                importance = str(importance)
+                if importance not in {"low", "medium", "high"}:
+                    importance = "medium"
+
+            await self.create_memory(
+                meeting_id=meeting_id,
+                source_id=source_id,
+                memory_type=memory_type,
+                content=(str(memory_content).strip()),
+                importance=importance,
+                confidence=confidence,
+            )
+            inserted += 1
+
+        return inserted
+
+    async def get_memories_by_meeting_id(self, meeting_id):
+        return [memory for memory in self.memories if memory.get("meeting_id") == meeting_id]
+
+    async def getMemoriesByMeetingId(self, meeting_id):
+        return await self.get_memories_by_meeting_id(meeting_id)
+
+    async def get_recent_memories(self, limit=20):
+        return list(reversed(self.memories))[:limit]
+
+    async def getRecentMemories(self, limit=20):
+        return await self.get_recent_memories(limit=limit)
+
+    async def get_memories_by_type(self, memory_type, limit=20):
+        if not memory_type:
+            return []
+        filtered = [
+            memory
+            for memory in self.memories
+            if memory.get("memory_type") == memory_type
+        ]
+        return list(reversed(filtered))[:limit]
+
+    async def getMemoriesByType(self, memory_type, limit=20):
+        return await self.get_memories_by_type(memory_type, limit=limit)
 
     async def get_action_items_by_meeting_id(self, meeting_id):
         return [item for item in self.action_items if item.get("meeting_id") == meeting_id]
@@ -808,6 +927,49 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.action_items[0]["confidence"], 0.71)
         self.assertEqual(store.action_items[1]["task"], "Schedule launch rehearsal")
         self.assertEqual(store.action_items[1]["owner_text"], "Ops")
+
+    async def test_run_meeting_extraction_persists_memories(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "text": "Payments are still failing.",
+                },
+            ]
+        }
+        service = build_service(
+            memory=FakeMemory(),
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Launch update","summary_long":"Aman said launch and Ravi reported payments issue.","decisions":[{"title":"Delay launch","decision_text":"The team decided to delay launch by one week."}],"action_items":[],"risks":[],"open_questions":[],"durable_memories":[{"memory_type":"risk","content":"Payment reliability is currently a launch risk.","importance":"high","confidence":0.84},{"content":"The team is prioritizing enterprise customers.","importance":"medium","confidence":0.75}]}'
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result.get("memories_inserted"), 2)
+        self.assertEqual(len(store.memories), 2)
+        self.assertEqual(store.memories[0]["memory_type"], "risk")
+        self.assertEqual(store.memories[0]["content"], "Payment reliability is currently a launch risk.")
+        self.assertEqual(store.memories[0]["importance"], "high")
+        self.assertEqual(store.memories[0]["confidence"], 0.84)
+        self.assertEqual(store.memories[1]["memory_type"], "important_fact")
+        self.assertEqual(store.memories[1]["content"], "The team is prioritizing enterprise customers.")
+        self.assertEqual(store.memories[1]["importance"], "medium")
 
     async def test_run_meeting_extraction_success(self):
         store = FakeMeetingStore()

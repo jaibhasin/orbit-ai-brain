@@ -170,10 +170,71 @@ async def testPersistActionItemsFromLatestExtraction(meeting_id: str):
     print(f"Inserted action items for meeting {meeting_id}: {inserted}")
 
 
+async def testPersistMemoriesFromLatestExtraction(meeting_id: str):
+    load_dotenv()
+
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required.")
+
+    store = build_meeting_store(database_url)
+    meeting = await store.get_meeting_by_id(meeting_id)
+    if not meeting:
+        raise RuntimeError(f"Meeting {meeting_id} not found.")
+
+    source_id = meeting.get("source_id")
+    if not source_id:
+        raise RuntimeError(f"Meeting {meeting_id} has no source_id.")
+
+    try:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
+    except Exception as error:
+        raise RuntimeError(
+            "psycopg is required to query extraction_runs for this script."
+        ) from error
+
+    async with await AsyncConnection.connect(database_url, row_factory=dict_row) as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT id, output_json
+                FROM extraction_runs
+                WHERE meeting_id = %s
+                  AND status = 'success'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (meeting_id,),
+            )
+            extraction_run = await cursor.fetchone()
+
+    if not extraction_run:
+        raise RuntimeError(f"No successful extraction found for meeting {meeting_id}.")
+
+    output_json = extraction_run.get("output_json") or {}
+    memories = (
+        output_json.get("durable_memories")
+        if output_json is not None
+        else None
+    )
+    if not memories:
+        memories = output_json.get("durableMemories")
+
+    inserted = await store.createMemoriesFromExtraction(
+        meeting_id=meeting_id,
+        source_id=source_id,
+        memories=memories,
+    )
+
+    print(f"Replayed extraction run id: {extraction_run.get('id')}")
+    print(f"Inserted memories for meeting {meeting_id}: {inserted}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Run extraction or persist decisions / action items from latest successful extraction."
+            "Run extraction or persist decisions / action items / memories from latest successful extraction."
         ),
     )
     parser.add_argument("--meeting-id", required=True, help="UUID of meeting row")
@@ -187,6 +248,11 @@ def parse_args():
         action="store_true",
         help="Persist action items from latest successful extraction for this meeting",
     )
+    parser.add_argument(
+        "--persist-memories",
+        action="store_true",
+        help="Persist durable memories from latest successful extraction for this meeting",
+    )
     return parser.parse_args()
 
 
@@ -196,5 +262,7 @@ if __name__ == "__main__":
         asyncio.run(testPersistDecisionsFromLatestExtraction(args.meeting_id))
     elif args.persist_action_items:
         asyncio.run(testPersistActionItemsFromLatestExtraction(args.meeting_id))
+    elif args.persist_memories:
+        asyncio.run(testPersistMemoriesFromLatestExtraction(args.meeting_id))
     else:
         asyncio.run(testMeetingExtraction(args.meeting_id))

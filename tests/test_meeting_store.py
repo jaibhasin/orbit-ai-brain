@@ -132,9 +132,11 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS extraction_runs", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS decisions", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS action_items", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS memories", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_decisions_meeting_id", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_action_items_meeting_id", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE INDEX IF NOT EXISTS idx_memories_meeting_id", MEETING_SCHEMA_SQL)
 
     async def test_save_source_chunks_inserts_text_with_order_and_metadata(self):
         cursor = FakeCursor()
@@ -421,6 +423,101 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.executions[2][1][4], "2026-07-02")
         self.assertEqual(cursor.executions[3][1][3], "Finance")
         self.assertEqual(cursor.executions[3][1][4], "2026-07-03")
+
+    async def test_create_memory_inserts_defaults_and_validation(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "memory-1"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        memory_id = await store.create_memory(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            memory_type="",
+            content="  Payment reliability is currently a launch risk. ",
+            importance="VERY_HIGH",
+            confidence="0.84",
+        )
+
+        self.assertEqual(memory_id, "memory-1")
+        self.assertIn("INSERT INTO memories", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][2], "important_fact")
+        self.assertEqual(cursor.executions[0][1][3], "Payment reliability is currently a launch risk.")
+        self.assertEqual(cursor.executions[0][1][4], "medium")
+        self.assertEqual(cursor.executions[0][1][5], 0.84)
+
+    async def test_createMemoriesFromExtraction_is_idempotent_and_skips_invalid(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "memory-1"}, {"id": "memory-2"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createMemoriesFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            memories=[
+                {
+                    "memory_type": "risk",
+                    "content": "Payment reliability is currently a launch risk.",
+                    "importance": "high",
+                    "confidence": 0.84,
+                },
+                {"memory_type": "project_update", "content": "   "},
+                {
+                    "content": "Onboarding project is blocked by missing design approval.",
+                    "importance": "low",
+                    "confidence": "not-a-number",
+                    "memoryType": "project_update",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertIn("DELETE FROM memories", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][0], "meeting-1")
+        self.assertIn("INSERT INTO memories", cursor.executions[1][0])
+
+    async def test_createMemoriesFromExtraction_uses_aliases_and_defaults(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "memory-1"}, {"id": "memory-2"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createMemoriesFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            memories=[
+                {
+                    "memory_type": "risk",
+                    "content": "Payments are flaky.",
+                    "importance": "high",
+                },
+                {
+                    "memoryType": "open_question",
+                    "content": "There is an unresolved pricing question.",
+                    "importance": "invalid",
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(cursor.executions[1][1][2], "risk")
+        self.assertEqual(cursor.executions[1][1][4], "high")
+        self.assertEqual(cursor.executions[2][1][2], "open_question")
+        self.assertEqual(cursor.executions[2][1][4], "medium")
+
+    async def test_createMemoriesFromExtraction_accepts_memory_alias(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "memory-1"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createMemoriesFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            memories=[
+                {
+                    "memory": "Launch date shifted to Monday.",
+                    "memoryType": "important_fact",
+                    "importance": "medium",
+                }
+            ],
+        )
+
+        self.assertEqual(inserted, 1)
+        self.assertEqual(cursor.executions[1][1][3], "Launch date shifted to Monday.")
 
     async def test_get_decisions_by_meeting_id(self):
         cursor = FakeCursor(

@@ -97,6 +97,23 @@ CREATE TABLE IF NOT EXISTS action_items (
 
 CREATE INDEX IF NOT EXISTS idx_action_items_meeting_id
     ON action_items (meeting_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS memories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    meeting_id UUID REFERENCES meetings(id) ON DELETE CASCADE,
+    source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
+    memory_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    importance TEXT NOT NULL DEFAULT 'medium',
+    confidence NUMERIC,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_meeting_id
+    ON memories (meeting_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memories_type
+    ON memories (memory_type);
 """
 
 
@@ -274,6 +291,58 @@ class DisabledMeetingStore:
     ) -> int:
         return 0
 
+    async def create_memory(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        memory_type: str | None = None,
+        content: str | None = None,
+        importance: str | None = None,
+        confidence: float | None = None,
+    ) -> str | None:
+        return None
+
+    async def createMemory(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_memory(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            memory_type=payload.get("memoryType") or payload.get("memory_type"),
+            content=payload.get("content"),
+            importance=payload.get("importance"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createMemoriesFromExtraction(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        memories=None,
+    ) -> int:
+        return 0
+
+    async def get_memories_by_meeting_id(self, meeting_id: str):
+        return []
+
+    async def getMemoriesByMeetingId(self, meeting_id: str):
+        return await self.get_memories_by_meeting_id(meeting_id)
+
+    async def get_recent_memories(self, limit: int = 20):
+        return []
+
+    async def getRecentMemories(self, limit: int = 20):
+        return await self.get_recent_memories(limit=limit)
+
+    async def get_memories_by_type(self, memory_type: str, limit: int = 20):
+        return []
+
+    async def getMemoriesByType(self, memory_type: str, limit: int = 20):
+        return await self.get_memories_by_type(memory_type, limit=limit)
+
     async def get_decisions_by_meeting_id(self, meeting_id: str):
         return []
 
@@ -380,6 +449,32 @@ class PostgresMeetingStore:
                 row = await cursor.fetchone()
                 await conn.commit()
                 return row["id"] if row else None
+
+    async def createMemory(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_memory(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            memory_type=payload.get("memoryType") or payload.get("memory_type"),
+            content=payload.get("content"),
+            importance=payload.get("importance"),
+            confidence=payload.get("confidence"),
+        )
+
+    async def createMemory(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_memory(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            memory_type=payload.get("memoryType") or payload.get("memory_type"),
+            content=payload.get("content"),
+            importance=payload.get("importance"),
+            confidence=payload.get("confidence"),
+        )
 
     async def create_meeting(
         self,
@@ -859,6 +954,115 @@ class PostgresMeetingStore:
     async def getRecentDecisions(self, limit: int = 20):
         return await self.get_recent_decisions(limit=limit)
 
+    async def get_action_items_by_meeting_id(self, meeting_id: str):
+        if not meeting_id:
+            return []
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        task,
+                        owner_text,
+                        due_date,
+                        status,
+                        confidence,
+                        created_at
+                    FROM action_items
+                    WHERE meeting_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (meeting_id,),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getActionItemsByMeetingId(self, meeting_id: str):
+        return await self.get_action_items_by_meeting_id(meeting_id)
+
+    async def get_recent_action_items(self, limit: int = 20):
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                safe_limit = max(1, min(int(limit), 1000)) if isinstance(limit, int) else 20
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        meeting_id,
+                        source_id,
+                        task,
+                        owner_text,
+                        due_date,
+                        status,
+                        confidence,
+                        created_at
+                    FROM action_items
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getRecentActionItems(self, limit: int = 20):
+        return await self.get_recent_action_items(limit=limit)
+
+    async def create_memory(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        memory_type: str | None = None,
+        content: str | None = None,
+        importance: str | None = None,
+        confidence: float | None = None,
+    ) -> str | None:
+        if not meeting_id or not source_id:
+            return None
+
+        content = self._coerce_optional_str(content)
+        if not content:
+            return None
+
+        memory_type = self._coerce_optional_str(memory_type) or "important_fact"
+        importance = self._coerce_optional_str(importance) or "medium"
+        importance = importance.lower()
+        if importance not in {"low", "medium", "high"}:
+            importance = "medium"
+        confidence = self._coerce_optional_float(confidence)
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO memories (
+                        meeting_id,
+                        source_id,
+                        memory_type,
+                        content,
+                        importance,
+                        confidence
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        meeting_id,
+                        source_id,
+                        memory_type,
+                        content,
+                        importance,
+                        confidence,
+                    ),
+                )
+                row = await cursor.fetchone()
+                await conn.commit()
+                return row["id"] if row else None
+
     async def createActionItemsFromExtraction(
         self,
         *,
@@ -915,7 +1119,61 @@ class PostgresMeetingStore:
                 await conn.commit()
                 return inserted
 
-    async def get_action_items_by_meeting_id(self, meeting_id: str):
+    async def createMemoriesFromExtraction(
+        self,
+        *,
+        meeting_id: str | None = None,
+        source_id: str | None = None,
+        memories=None,
+    ) -> int:
+        if not meeting_id or not source_id:
+            return 0
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    "DELETE FROM memories WHERE meeting_id = %s",
+                    (meeting_id,),
+                )
+
+                if not isinstance(memories, list) or not memories:
+                    await conn.commit()
+                    return 0
+
+                inserted = 0
+                for memory in memories:
+                    normalized = self._normalize_memory(memory)
+                    if not normalized:
+                        continue
+
+                    await cursor.execute(
+                        """
+                        INSERT INTO memories (
+                            meeting_id,
+                            source_id,
+                            memory_type,
+                            content,
+                            importance,
+                            confidence
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            meeting_id,
+                            source_id,
+                            normalized["memory_type"],
+                            normalized["content"],
+                            normalized["importance"],
+                            normalized["confidence"],
+                        ),
+                    )
+                    inserted += 1
+
+                await conn.commit()
+                return inserted
+
+    async def get_memories_by_meeting_id(self, meeting_id: str):
         if not meeting_id:
             return []
 
@@ -926,13 +1184,12 @@ class PostgresMeetingStore:
                     """
                     SELECT
                         id,
-                        task,
-                        owner_text,
-                        due_date,
-                        status,
+                        memory_type,
+                        content,
+                        importance,
                         confidence,
                         created_at
-                    FROM action_items
+                    FROM memories
                     WHERE meeting_id = %s
                     ORDER BY created_at DESC
                     """,
@@ -940,10 +1197,10 @@ class PostgresMeetingStore:
                 )
                 return (await cursor.fetchall()) or []
 
-    async def getActionItemsByMeetingId(self, meeting_id: str):
-        return await self.get_action_items_by_meeting_id(meeting_id)
+    async def getMemoriesByMeetingId(self, meeting_id: str):
+        return await self.get_memories_by_meeting_id(meeting_id)
 
-    async def get_recent_action_items(self, limit: int = 20):
+    async def get_recent_memories(self, limit: int = 20):
         await self._ensure_ready()
         async with await self._connect() as conn:
             async with conn.cursor() as cursor:
@@ -954,13 +1211,12 @@ class PostgresMeetingStore:
                         id,
                         meeting_id,
                         source_id,
-                        task,
-                        owner_text,
-                        due_date,
-                        status,
+                        memory_type,
+                        content,
+                        importance,
                         confidence,
                         created_at
-                    FROM action_items
+                    FROM memories
                     ORDER BY created_at DESC
                     LIMIT %s
                     """,
@@ -968,8 +1224,36 @@ class PostgresMeetingStore:
                 )
                 return (await cursor.fetchall()) or []
 
-    async def getRecentActionItems(self, limit: int = 20):
-        return await self.get_recent_action_items(limit=limit)
+    async def getRecentMemories(self, limit: int = 20):
+        return await self.get_recent_memories(limit=limit)
+
+    async def get_memories_by_type(self, memory_type: str, limit: int = 20):
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                safe_limit = max(1, min(int(limit), 1000)) if isinstance(limit, int) else 20
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        meeting_id,
+                        source_id,
+                        memory_type,
+                        content,
+                        importance,
+                        confidence,
+                        created_at
+                    FROM memories
+                    WHERE memory_type = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (self._coerce_optional_str(memory_type), safe_limit),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getMemoriesByType(self, memory_type: str, limit: int = 20):
+        return await self.get_memories_by_type(memory_type, limit=limit)
 
     def _normalize_source_chunk(self, chunk: dict) -> dict | None:
         if not isinstance(chunk, dict):
@@ -1069,6 +1353,34 @@ class PostgresMeetingStore:
             ),
             "status": self._coerce_optional_str(action_item.get("status")) or "open",
             "confidence": self._coerce_optional_float(action_item.get("confidence")),
+        }
+
+    def _normalize_memory(self, memory):
+        if not isinstance(memory, dict):
+            return None
+
+        content = self._coerce_optional_str(
+            memory.get("content"),
+            memory.get("memory"),
+            memory.get("text"),
+        )
+        if not content:
+            return None
+
+        memory_type = self._coerce_optional_str(
+            memory.get("memoryType"),
+            memory.get("memory_type"),
+        ) or "important_fact"
+        importance = self._coerce_optional_str(memory.get("importance")) or "medium"
+        importance = importance.lower()
+        if importance not in {"low", "medium", "high"}:
+            importance = "medium"
+
+        return {
+            "memory_type": memory_type,
+            "content": content,
+            "importance": importance,
+            "confidence": self._coerce_optional_float(memory.get("confidence")),
         }
 
 
