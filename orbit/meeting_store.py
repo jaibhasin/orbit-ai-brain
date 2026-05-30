@@ -783,6 +783,8 @@ class PostgresMeetingStore:
         decision_text = self._coerce_optional_str(
             decision.get("decisionText"),
             decision.get("decision_text"),
+            decision.get("decision"),
+            decision.get("text"),
         )
         if not decision_text:
             return None
@@ -794,6 +796,7 @@ class PostgresMeetingStore:
             "owner_text": self._coerce_optional_str(
                 decision.get("ownerText"),
                 decision.get("owner_text"),
+                decision.get("owner"),
             ),
             "confidence": self._coerce_optional_float(decision.get("confidence")),
         }

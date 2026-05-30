@@ -292,6 +292,18 @@ class FakeMeetingStore:
                     else ""
                 )
             if not decision_text:
+                decision_text = (
+                    (decision.get("decision") or "").strip()
+                    if isinstance(decision, dict)
+                    else ""
+                )
+            if not decision_text:
+                decision_text = (
+                    (decision.get("text") or "").strip()
+                    if isinstance(decision, dict)
+                    else ""
+                )
+            if not decision_text:
                 continue
 
             await self.create_decision(
@@ -303,7 +315,8 @@ class FakeMeetingStore:
                 if isinstance(decision, dict) and decision.get("rationale") is not None
                 else None,
                 owner_text=(decision.get("ownerText") or decision.get("owner_text") or "").strip()
-                if isinstance(decision, dict) and (decision.get("ownerText") or decision.get("owner_text")) is not None
+                if isinstance(decision, dict)
+                and (decision.get("ownerText") or decision.get("owner_text") or decision.get("owner")) is not None
                 else None,
                 confidence=decision.get("confidence") if isinstance(decision, dict) else None,
             )
@@ -612,6 +625,45 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.decisions[0]["decision_text"], "The team decided to delay launch by one week.")
         self.assertEqual(store.decisions[0]["owner_text"], "Engineering")
         self.assertEqual(store.decisions[0]["confidence"], 0.86)
+
+    async def test_run_meeting_extraction_persists_decisions_with_legacy_keys(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "text": "Payments are still failing.",
+                },
+            ]
+        }
+        service = build_service(
+            memory=FakeMemory(),
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Launch update","summary_long":"Aman said launch and Ravi reported payments issue.","decisions":[{"decision":"The team decided to delay launch by one week.","confidence":0.91},{"owner":"PM","decision":"Close pending tasks before launch."}],"action_items":[],"risks":[],"open_questions":[],"durable_memories":[]}'
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result.get("decisions_inserted"), 2)
+        self.assertEqual(len(store.decisions), 2)
+        self.assertEqual(store.decisions[0]["decision_text"], "The team decided to delay launch by one week.")
+        self.assertEqual(store.decisions[1]["decision_text"], "Close pending tasks before launch.")
+        self.assertEqual(store.decisions[1]["title"], "")
 
     async def test_run_meeting_extraction_success(self):
         store = FakeMeetingStore()

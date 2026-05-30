@@ -300,6 +300,36 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cursor.executions[0][1][0], "meeting-1")
         self.assertIn("INSERT INTO decisions", cursor.executions[1][0])
 
+    async def test_createDecisionsFromExtraction_accepts_decision_and_text_aliases(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "decision-1"}, {"id": "decision-2"}, {"id": "decision-3"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        inserted = await store.createDecisionsFromExtraction(
+            meeting_id="meeting-1",
+            source_id="source-1",
+            decisions=[
+                {
+                    "title": "Delay launch",
+                    "decision": "The team decided to delay launch.",
+                    "owner": "PM",
+                    "confidence": "0.91",
+                },
+                {
+                    "title": "Text key fallback",
+                    "text": "Use the transcript text field.",
+                    "ownerText": "Eng",
+                    "confidence": 0.87,
+                },
+            ],
+        )
+
+        self.assertEqual(inserted, 2)
+        self.assertEqual(cursor.executions[1][1][2], "Delay launch")
+        self.assertEqual(cursor.executions[1][1][3], "The team decided to delay launch.")
+        self.assertEqual(cursor.executions[1][1][6], 0.91)
+        self.assertEqual(cursor.executions[2][1][2], "Text key fallback")
+        self.assertEqual(cursor.executions[2][1][3], "Use the transcript text field.")
+
     async def test_get_decisions_by_meeting_id(self):
         cursor = FakeCursor(
             fetchall_results=[
