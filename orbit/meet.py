@@ -887,6 +887,10 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
     deadline = asyncio.get_running_loop().time() + (wait_after_run_ms / 1000)
     next_participant_check_at = 0.0
     while asyncio.get_running_loop().time() < deadline:
+        if state.stop_requested:
+            state.leave_reason = state.stop_reason or "Orbit was asked to stop monitoring this meeting."
+            log(state.leave_reason, state.session_id)
+            break
         now = asyncio.get_running_loop().time()
         if now >= next_participant_check_at:
             next_participant_check_at = now + (PARTICIPANT_CHECK_INTERVAL_MS / 1000)

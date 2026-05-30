@@ -90,8 +90,9 @@ def final_deepgram_message(text="we should launch on friday"):
 class LiveSTTTests(unittest.IsolatedAsyncioTestCase):
     async def test_final_deepgram_message_is_normalized_and_stored(self):
         memory = FakeMemory()
+        state = build_state()
         session = LiveSTTSession(
-            state=build_state(),
+            state=state,
             memory=memory,
             api_key="dg-key",
             model="nova-3",
@@ -103,6 +104,7 @@ class LiveSTTTests(unittest.IsolatedAsyncioTestCase):
         segments = memory.transcripts[0][1]
         self.assertEqual(segments[0].clean_text, "We should launch on friday.")
         self.assertIn("Meet abc-defg-hij transcript", segments[0].memory_text)
+        self.assertEqual(state.live_transcript_segments, segments)
 
     async def test_caption_names_are_best_effort_enrichment(self):
         memory = FakeMemory()

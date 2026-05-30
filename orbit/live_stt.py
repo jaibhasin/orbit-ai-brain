@@ -14,6 +14,9 @@ from orbit.meet_types import MeetingState
 from orbit.memory import MemoryService
 from orbit.transcript_normalizer import normalize_transcript_segments
 
+MAX_LIVE_TRANSCRIPT_SEGMENTS = 400
+MAX_LIVE_TRANSCRIPT_CHARS = 80000
+
 
 @dataclass
 class LiveAudioFormat:
@@ -99,8 +102,21 @@ class LiveSTTSession:
         if not normalized_segments:
             return
 
+        self.state.live_transcript_segments.extend(normalized_segments)
+        self._trim_live_transcript_buffer()
         await self.memory.record_transcript_segments(self.state, normalized_segments)
         self.final_segments_recorded += len(normalized_segments)
+
+    def _trim_live_transcript_buffer(self) -> None:
+        segments = self.state.live_transcript_segments[-MAX_LIVE_TRANSCRIPT_SEGMENTS:]
+        total_chars = 0
+        kept = []
+        for segment in reversed(segments):
+            total_chars += len(segment.clean_text)
+            if total_chars > MAX_LIVE_TRANSCRIPT_CHARS:
+                break
+            kept.append(segment)
+        self.state.live_transcript_segments = list(reversed(kept))
 
     async def close(self) -> None:
         self.closed = True

@@ -107,6 +107,34 @@ class ParticipantExitTests(unittest.IsolatedAsyncioTestCase):
         collect_captions.assert_not_awaited()
         self.assertEqual(state.leave_reason, "Meeting monitoring duration elapsed.")
 
+    @patch("orbit.meet.process_messages", new_callable=AsyncMock)
+    @patch("orbit.meet.collect_visible_chat_messages", new_callable=AsyncMock, return_value=[])
+    @patch("orbit.meet.collect_visible_captions", new_callable=AsyncMock)
+    @patch("orbit.meet.send_introduction", new_callable=AsyncMock)
+    @patch("orbit.meet.open_chat_panel", new_callable=AsyncMock, return_value=True)
+    @patch("orbit.meet.get_participant_count", new_callable=AsyncMock)
+    async def test_monitor_exits_when_stop_requested(
+        self,
+        get_count,
+        open_chat,
+        send_intro,
+        collect_captions,
+        collect_messages,
+        process_messages,
+    ):
+        page = object()
+        state = self.build_state()
+        state.stop_requested = True
+        state.stop_reason = "Orbit was asked from WhatsApp to stop monitoring this meeting."
+
+        await monitor_chat(page, state, wait_after_run_ms=100)
+
+        get_count.assert_not_awaited()
+        self.assertEqual(
+            state.leave_reason,
+            "Orbit was asked from WhatsApp to stop monitoring this meeting.",
+        )
+
 
 class TriggerExtensionAudioCaptureTests(unittest.IsolatedAsyncioTestCase):
     class FakePage:
