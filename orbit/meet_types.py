@@ -44,6 +44,9 @@ class MeetingState:
     live_stt_audio_confirmed_at: str | None = None
     live_stt_audio_token: str | None = None
     live_stt_status_detail: str | None = None
+    observed_other_participants: bool = False
+    solo_participant_polls: int = 0
+    leave_reason: str | None = None
     seen_message_fingerprints: set[str] = field(default_factory=set)
     captured_messages: list[ChatMessage] = field(default_factory=list)
     pending_speak_permissions: int = 0

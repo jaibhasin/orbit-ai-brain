@@ -16,7 +16,7 @@ class DeepgramLiveConfig:
     encoding: str = "linear16"
     sample_rate: int = 16000
     channels: int = 1
-    interim_results: bool = True
+    interim_results: bool = False
     smart_format: bool = True
     punctuate: bool = True
     diarize: bool = False

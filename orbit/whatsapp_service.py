@@ -355,9 +355,11 @@ class OrbitWhatsAppService:
             live_stt_summary = ""
             if state.live_stt_requested and not state.live_stt_started:
                 live_stt_summary = " Live audio transcription did not start because no audio chunk was received."
+            leave_summary = f" {state.leave_reason}" if state.leave_reason else ""
             await self.send_whatsapp_message(
                 f"Orbit finished Meet {state.meeting_code}. Captured {len(state.captured_messages)} chat message(s)."
                 f"{live_stt_summary}"
+                f"{leave_summary}"
             )
             return
 

@@ -20,6 +20,7 @@ class DeepgramLiveTests(unittest.TestCase):
         self.assertIn("encoding=linear16", url)
         self.assertIn("sample_rate=16000", url)
         self.assertIn("channels=1", url)
+        self.assertIn("interim_results=false", url)
 
     def test_final_event_becomes_transcript_segment(self):
         payload = {

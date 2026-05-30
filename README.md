@@ -308,7 +308,7 @@ Fallback/debug live audio stream from a PulseAudio/PipeWire monitor source:
 | `ORBIT_MAX_PARALLEL_MEETINGS` | Meeting concurrency limit |
 | `ORBIT_MEMORY_SEARCH_LIMIT` | Number of memory chunks retrieved for RAG |
 | `GMEET_DISPLAY_NAME` | Name Orbit uses in Google Meet |
-| `GMEET_WAIT_AFTER_JOIN_MS` | How long to monitor after joining |
+| `GMEET_WAIT_AFTER_JOIN_MS` | Maximum monitoring duration after joining, default `300000` (5 minutes). Orbit checks participants every 30 seconds and leaves earlier after other participants depart and it is the only participant left. |
 | `GMEET_USE_SYSTEM_CHROME` | Use installed Chrome profile instead of managed browser |
 | `HEADLESS` | Run browser in headless mode |
 

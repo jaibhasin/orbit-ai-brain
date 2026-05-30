@@ -32,6 +32,8 @@ from orbit.meet_types import (
 
 
 POLL_INTERVAL_MS = 3000
+PARTICIPANT_CHECK_INTERVAL_MS = 30000
+SOLO_PARTICIPANT_POLLS_BEFORE_LEAVE = 2
 ORBIT_MENTION_PATTERN = re.compile(r"(?<!\w)@orbit(?!\w)", re.IGNORECASE)
 
 
@@ -129,7 +131,7 @@ def build_default_session_config(meet_url, session_id=None):
         session_id=resolved_session_id,
         meet_url=meet_url,
         display_name=os.environ.get("GMEET_DISPLAY_NAME", "Orbit Agent"),
-        wait_after_join_ms=env_int("GMEET_WAIT_AFTER_JOIN_MS", 120000),
+        wait_after_join_ms=env_int("GMEET_WAIT_AFTER_JOIN_MS", 300000),
         max_steps=env_int("GMEET_BROWSER_USE_MAX_STEPS", 20),
         model_name=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
         live_stt_enabled=live_stt_enabled,
@@ -233,6 +235,56 @@ async def ensure_joined(page, timeout_ms=20000):
         await asyncio.sleep(2)
 
     return False
+
+
+async def get_participant_count(page):
+    result = await evaluate_json(
+        page,
+        """() => {
+            const normalize = (text) => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+            const candidates = Array.from(document.querySelectorAll('button, [role="button"]'));
+            const counts = [];
+
+            for (const node of candidates) {
+                const label = normalize([
+                    node.getAttribute('aria-label'),
+                    node.getAttribute('title'),
+                    node.textContent,
+                ].filter(Boolean).join(' '));
+                if (
+                    !label.includes('show everyone') &&
+                    !label.includes('participants') &&
+                    !label.includes('people')
+                ) {
+                    continue;
+                }
+
+                const matches = label.match(/\\d+/g) || [];
+                for (const match of matches) counts.push(Number(match));
+            }
+
+            return JSON.stringify({ count: counts.length ? Math.max(...counts) : null });
+        }""",
+    )
+    if not result or result.get("count") is None:
+        return None
+    return int(result["count"])
+
+
+def should_leave_when_only_orbit_remains(state, participant_count):
+    if participant_count is None:
+        state.solo_participant_polls = 0
+        return False
+    if participant_count > 1:
+        state.observed_other_participants = True
+        state.solo_participant_polls = 0
+        return False
+    if participant_count != 1 or not state.observed_other_participants:
+        state.solo_participant_polls = 0
+        return False
+
+    state.solo_participant_polls += 1
+    return state.solo_participant_polls >= SOLO_PARTICIPANT_POLLS_BEFORE_LEAVE
 
 
 async def is_chat_panel_open(page):
@@ -833,14 +885,26 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
         await process_messages(page, state, initial_messages, "startup", callbacks)
 
     deadline = asyncio.get_running_loop().time() + (wait_after_run_ms / 1000)
+    next_participant_check_at = 0.0
     while asyncio.get_running_loop().time() < deadline:
+        now = asyncio.get_running_loop().time()
+        if now >= next_participant_check_at:
+            next_participant_check_at = now + (PARTICIPANT_CHECK_INTERVAL_MS / 1000)
+            try:
+                participant_count = await get_participant_count(page)
+                if should_leave_when_only_orbit_remains(state, participant_count):
+                    state.leave_reason = "Orbit is the only participant left in the meeting."
+                    log(state.leave_reason, state.session_id)
+                    break
+            except Exception as error:
+                log(f"Participant count check failed: {error}", state.session_id)
         if chat_open:
             try:
                 messages = await collect_visible_chat_messages(page)
                 await process_messages(page, state, messages, "poll", callbacks)
             except Exception as error:
                 log(f"Chat polling failed: {error}", state.session_id)
-        if state.live_stt_requested:
+        if state.live_stt_available:
             try:
                 captions = await collect_visible_captions(page)
                 new_captions = []
@@ -856,6 +920,8 @@ async def monitor_chat(page, state, wait_after_run_ms, callbacks=None):
                 log(f"Caption scraping failed: {error}", state.session_id)
         await asyncio.sleep(POLL_INTERVAL_MS / 1000)
 
+    if state.leave_reason is None:
+        state.leave_reason = "Meeting monitoring duration elapsed."
     log(
         "Chat monitor finished with "
         f"{state.pending_speak_permissions} pending speak permission(s).",

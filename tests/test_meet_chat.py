@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 from orbit.meet import (
     build_intro_message,
+    get_participant_count,
     is_orbit_authored_message,
+    monitor_chat,
+    should_leave_when_only_orbit_remains,
     trigger_extension_audio_capture,
 )
 from orbit.meet_types import ChatMessage, MeetingState
@@ -29,6 +32,80 @@ class MeetChatTests(unittest.TestCase):
         )
 
         self.assertTrue(is_orbit_authored_message(state, message))
+
+
+class ParticipantExitTests(unittest.IsolatedAsyncioTestCase):
+    class FakePage:
+        def __init__(self, result):
+            self.result = result
+
+        async def evaluate(self, script, *args):
+            return self.result
+
+    def build_state(self):
+        return MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+        )
+
+    async def test_participant_count_reads_dom_result(self):
+        page = self.FakePage('{"count": 3}')
+
+        self.assertEqual(await get_participant_count(page), 3)
+
+    async def test_participant_count_returns_none_when_dom_has_no_count(self):
+        page = self.FakePage('{"count": null}')
+
+        self.assertIsNone(await get_participant_count(page))
+
+    async def test_joining_alone_does_not_trigger_early_leave(self):
+        state = self.build_state()
+
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 1))
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 1))
+
+    async def test_leaves_after_other_participants_depart(self):
+        state = self.build_state()
+
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 3))
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 1))
+        self.assertTrue(should_leave_when_only_orbit_remains(state, 1))
+
+    async def test_unknown_count_resets_solo_poll_streak(self):
+        state = self.build_state()
+
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 2))
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 1))
+        self.assertFalse(should_leave_when_only_orbit_remains(state, None))
+        self.assertFalse(should_leave_when_only_orbit_remains(state, 1))
+
+    @patch("orbit.meet.process_messages", new_callable=AsyncMock)
+    @patch("orbit.meet.collect_visible_chat_messages", new_callable=AsyncMock, return_value=[])
+    @patch("orbit.meet.collect_visible_captions", new_callable=AsyncMock)
+    @patch("orbit.meet.send_introduction", new_callable=AsyncMock)
+    @patch("orbit.meet.open_chat_panel", new_callable=AsyncMock, return_value=True)
+    @patch("orbit.meet.get_participant_count", new_callable=AsyncMock, return_value=2)
+    @patch("orbit.meet.asyncio.sleep", new_callable=AsyncMock)
+    async def test_monitor_checks_participants_every_thirty_seconds(
+        self,
+        sleep,
+        get_count,
+        open_chat,
+        send_intro,
+        collect_captions,
+        collect_messages,
+        process_messages,
+    ):
+        page = object()
+        state = self.build_state()
+
+        await monitor_chat(page, state, wait_after_run_ms=100)
+
+        get_count.assert_awaited_once_with(page)
+        collect_captions.assert_not_awaited()
+        self.assertEqual(state.leave_reason, "Meeting monitoring duration elapsed.")
 
 
 class TriggerExtensionAudioCaptureTests(unittest.IsolatedAsyncioTestCase):

@@ -241,6 +241,33 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_finished_meeting_reports_leave_reason(self):
+        service = build_service()
+        whatsapp_updates = []
+
+        async def fake_send_whatsapp_message(body):
+            whatsapp_updates.append(body)
+
+        service.send_whatsapp_message = fake_send_whatsapp_message
+        state = MeetingState(
+            session_id="session-1",
+            meet_url="https://meet.google.com/abc-defg-hij",
+            meeting_code="abc-defg-hij",
+            display_name="Orbit",
+            joined_at="2026-05-30T09:34:16Z",
+            leave_reason="Orbit is the only participant left in the meeting.",
+        )
+
+        await service.handle_session_finished(state)
+
+        self.assertEqual(
+            whatsapp_updates,
+            [
+                "Orbit finished Meet abc-defg-hij. Captured 0 chat message(s). "
+                "Orbit is the only participant left in the meeting."
+            ],
+        )
+
     async def test_meet_chat_mention_gets_model_reply(self):
         service = build_service()
         state = MeetingState(
