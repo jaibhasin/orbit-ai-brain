@@ -27,8 +27,25 @@ from orbit.memory import MemoryAnswer, MemorySource, build_memory_service
 from orbit.live_stt import LiveAudioFormat, LiveSTTManager
 from orbit.transcript import TranscriptSegment, format_timestamp_ms
 from openai import AsyncOpenAI
-from twilio.rest import Client
-from twilio.twiml.messaging_response import MessagingResponse
+try:
+    from twilio.rest import Client
+    from twilio.twiml.messaging_response import MessagingResponse
+except Exception:
+    class Client:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("Twilio SDK is not installed.")
+
+    class MessagingResponse:
+        def __init__(self, *args, **kwargs):
+            self._value = ""
+
+        def message(self, body=None):
+            if body is not None:
+                self._value = body
+            return self._value
+
+        def __str__(self):
+            return str(self._value)
 
 
 MEET_LINK_PATTERN = re.compile(r"https://meet\.google\.com/[^\s<>\"]+", re.IGNORECASE)
@@ -48,6 +65,33 @@ LIVE_RECALL_MAX_SEGMENTS = 30
 LIVE_RECAP_MAX_SEGMENTS = 40
 LIVE_RECALL_MAX_PROMPT_CHARS = 8000
 STOP_TIMEOUT_SECONDS = 10
+MEETING_EXTRACTION_PROMPT_VERSION = "meeting-extractor-v1"
+MEETING_EXTRACTION_RUN_TYPE = "full_meeting_extraction"
+MEETING_EXTRACT_PROMPT = """You are extracting structured company memory from a meeting transcript.
+
+Return only valid JSON. Do not include markdown.
+
+Extract:
+- short summary
+- long summary
+- decisions
+- action items
+- risks
+- open questions
+- durable memories
+
+Rules:
+- Do not invent information.
+- If there are no decisions, return an empty decisions array.
+- Do not treat suggestions as decisions.
+- Only extract action items if there is a clear task.
+- If owner is unclear, use null or empty string.
+- Use confidence from 0 to 1.
+- Keep output concise.
+
+Transcript:
+{transcript}
+"""
 ANSWER_MODE_LABELS = {
     "memory_answer": "memory-backed recall",
     "insufficient_memory": "insufficient company memory",
@@ -810,6 +854,229 @@ class OrbitWhatsAppService:
         content = response.choices[0].message.content if response.choices else ""
         return (content or "").strip() or "I’m here."
 
+    async def runMeetingExtraction(self, payload: dict):
+        if not isinstance(payload, dict):
+            raise TypeError("runMeetingExtraction expects a payload dict.")
+
+        return await self.run_meeting_extraction(
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            run_type=payload.get("runType") or payload.get("run_type", MEETING_EXTRACTION_RUN_TYPE),
+            model=payload.get("model") or self.model_name,
+            prompt_version=payload.get("promptVersion") or payload.get("prompt_version", MEETING_EXTRACTION_PROMPT_VERSION),
+            summary_short=payload.get("summary_short"),
+            summary_long=payload.get("summary_long"),
+            started_at=payload.get("started_at"),
+            ended_at=payload.get("ended_at"),
+            skip_status_updates=payload.get("skip_status_updates", False),
+        )
+
+    async def run_meeting_extraction(
+        self,
+        meeting_id: str,
+        source_id: str,
+        *,
+        run_type: str = MEETING_EXTRACTION_RUN_TYPE,
+        model: str | None = None,
+        prompt_version: str = MEETING_EXTRACTION_PROMPT_VERSION,
+        summary_short: str | None = None,
+        summary_long: str | None = None,
+        started_at: str | None = None,
+        ended_at: str | None = None,
+        skip_status_updates: bool = False,
+    ) -> dict:
+        if not meeting_id:
+            raise ValueError("meetingId is required for extraction.")
+        if not source_id:
+            raise ValueError("sourceId is required for extraction.")
+
+        store = getattr(self, "meeting_store", None)
+        if not store:
+            raise RuntimeError("Meeting store is not configured.")
+
+        if not skip_status_updates:
+            await store.update_meeting_status(
+                meeting_id,
+                "processing",
+                ended_at=ended_at,
+                started_at=started_at,
+                summary_short=summary_short,
+                summary_long=summary_long,
+            )
+
+        try:
+            chunks = await store.get_source_chunks_by_source_id(source_id) or []
+            transcript = self._build_transcript_text(chunks)
+            if not transcript:
+                output_json = self._empty_extraction_output()
+                extraction_run_id = await store.create_extraction_run(
+                    source_id=source_id,
+                    meeting_id=meeting_id,
+                    run_type=run_type,
+                    model=model or self.model_name,
+                    prompt_version=prompt_version,
+                    output_json=output_json,
+                    status="success",
+                    error=None,
+                )
+                if not skip_status_updates:
+                    await store.update_meeting_status(
+                        meeting_id,
+                        "processed",
+                        ended_at=ended_at,
+                        started_at=started_at,
+                        summary_short=summary_short,
+                        summary_long=summary_long,
+                    )
+                return {
+                    "extraction_run_id": extraction_run_id,
+                    "status": "success",
+                    "output_json": output_json,
+                }
+
+            extraction_prompt = MEETING_EXTRACT_PROMPT.format(transcript=transcript)
+            response = await self.openai_client.chat.completions.create(
+                model=model or self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": MEETING_EXTRACT_PROMPT.split("Transcript:")[0].strip(),
+                    },
+                    {"role": "user", "content": extraction_prompt},
+                ],
+            )
+            raw_output = (response.choices[0].message.content or "").strip() if response.choices else ""
+            output_json = self._parse_extraction_json(raw_output)
+            output_json = self._normalize_extraction_output(output_json)
+            extraction_run_id = await store.create_extraction_run(
+                source_id=source_id,
+                meeting_id=meeting_id,
+                run_type=run_type,
+                model=model or self.model_name,
+                prompt_version=prompt_version,
+                output_json=output_json,
+                status="success",
+                error=None,
+            )
+
+            if not skip_status_updates:
+                await store.update_meeting_status(
+                    meeting_id,
+                    "processed",
+                    ended_at=ended_at,
+                    started_at=started_at,
+                    summary_short=summary_short,
+                    summary_long=summary_long,
+                )
+            return {
+                "extraction_run_id": extraction_run_id,
+                "status": "success",
+                "output_json": output_json,
+            }
+        except Exception as error:
+            error_message = str(error)
+            try:
+                await store.create_extraction_run(
+                    source_id=source_id,
+                    meeting_id=meeting_id,
+                    run_type=run_type,
+                    model=model or self.model_name,
+                    prompt_version=prompt_version,
+                    output_json=None,
+                    status="failed",
+                    error=error_message,
+                )
+            except Exception as nested_error:
+                log(
+                    f"Failed to save extraction failure row for {meeting_id}: {nested_error}",
+                    session_id=meeting_id,
+                    level="error",
+                )
+
+            if not skip_status_updates:
+                try:
+                    await store.update_meeting_status(
+                        meeting_id,
+                        "failed",
+                        ended_at=ended_at,
+                        started_at=started_at,
+                        summary_short=summary_short,
+                        summary_long=summary_long,
+                    )
+                except Exception as nested_error:
+                    log(
+                        f"Failed to mark meeting as failed for {meeting_id}: {nested_error}",
+                        session_id=meeting_id,
+                        level="error",
+                    )
+            return {"extraction_run_id": None, "status": "failed", "error": error_message}
+
+    def _build_transcript_text(self, chunks):
+        lines = []
+        for chunk in chunks or []:
+            if not isinstance(chunk, dict):
+                continue
+            text = (chunk.get("text") or "").strip()
+            if not text:
+                continue
+            speaker = (chunk.get("speaker_label") or "Unknown") or "Unknown"
+            lines.append(f"{speaker}: {text}")
+        return "\n".join(lines)
+
+    def _parse_extraction_json(self, raw_output: str):
+        if not raw_output:
+            raise ValueError("Empty extraction output.")
+
+        trimmed = raw_output.strip()
+        try:
+            return json.loads(trimmed)
+        except json.JSONDecodeError:
+            pass
+
+        if trimmed.startswith("```"):
+            trimmed = trimmed.strip("`")
+            if not trimmed:
+                raise ValueError("Extraction output was wrapped in an empty markdown block.")
+
+        brace_start = trimmed.find("{")
+        brace_end = trimmed.rfind("}")
+        if brace_start == -1 or brace_end <= brace_start:
+            raise ValueError("Could not locate JSON object in extraction output.")
+
+        candidate = trimmed[brace_start : brace_end + 1]
+        return json.loads(candidate)
+
+    @staticmethod
+    def _coerce_output_list(value):
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def _normalize_extraction_output(value):
+        if not isinstance(value, dict):
+            raise ValueError("Extraction output is not a JSON object.")
+
+        return {
+            "summary_short": str(value.get("summary_short", "")) if value.get("summary_short") is not None else "",
+            "summary_long": str(value.get("summary_long", "")) if value.get("summary_long") is not None else "",
+            "decisions": OrbitWhatsAppService._coerce_output_list(value.get("decisions")),
+            "action_items": OrbitWhatsAppService._coerce_output_list(value.get("action_items")),
+            "risks": OrbitWhatsAppService._coerce_output_list(value.get("risks")),
+            "open_questions": OrbitWhatsAppService._coerce_output_list(value.get("open_questions")),
+            "durable_memories": OrbitWhatsAppService._coerce_output_list(value.get("durable_memories")),
+        }
+
+    @staticmethod
+    def _empty_extraction_output():
+        return {
+            "summary_short": "",
+            "summary_long": "",
+            "decisions": [],
+            "action_items": [],
+            "risks": [],
+            "open_questions": [],
+            "durable_memories": [],
+        }
+
     async def handle_session_finished(self, state):
         await self.live_stt.stop(state.session_id)
         await self._finalize_persistent_meeting(state)
@@ -858,6 +1125,25 @@ class OrbitWhatsAppService:
             chunks = self._build_transcript_source_chunks(state)
             if chunks:
                 await store.save_transcript_chunks(active.source_id, chunks)
+            extraction = await self.run_meeting_extraction(
+                active.meeting_id,
+                active.source_id,
+                summary_short=summary_short,
+                summary_long=summary_long,
+                started_at=state.joined_at,
+                ended_at=ended_at,
+                skip_status_updates=True,
+            )
+            if extraction.get("status") == "failed":
+                await store.update_meeting_status(
+                    active.meeting_id,
+                    "failed",
+                    ended_at=ended_at,
+                    started_at=state.joined_at,
+                    summary_short=summary_short,
+                    summary_long=summary_long,
+                )
+                return
             await store.update_meeting_status(
                 active.meeting_id,
                 "processed",

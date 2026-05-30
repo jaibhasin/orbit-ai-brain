@@ -6,8 +6,9 @@ from orbit.meeting_store import MEETING_SCHEMA_SQL, DisabledMeetingStore, Postgr
 
 
 class FakeCursor:
-    def __init__(self, *, fetchone_results=None, events=None):
+    def __init__(self, *, fetchone_results=None, fetchall_results=None, events=None):
         self.fetchone_results = list(fetchone_results or [])
+        self.fetchall_results = list(fetchall_results if fetchall_results is not None else [])
         self.events = events if events is not None else []
         self.executions = []
 
@@ -24,6 +25,9 @@ class FakeCursor:
 
     async def fetchone(self):
         return self.fetchone_results.pop(0)
+
+    async def fetchall(self):
+        return self.fetchall_results
 
 
 class FakeConnection:
@@ -125,6 +129,7 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS sources", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS meetings", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE TABLE IF NOT EXISTS source_chunks", MEETING_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS extraction_runs", MEETING_SCHEMA_SQL)
         self.assertIn("CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id", MEETING_SCHEMA_SQL)
 
     async def test_save_source_chunks_inserts_text_with_order_and_metadata(self):
@@ -188,6 +193,56 @@ class MeetingStoreTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(inserted, 1)
         self.assertIn("INSERT INTO source_chunks", cursor.executions[0][0])
+
+    async def test_get_source_chunks_by_source_id_orders_results(self):
+        cursor = FakeCursor(
+            fetchall_results=[
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "start_ms": 0,
+                    "end_ms": 2500,
+                    "text": "We should launch next week.",
+                    "metadata": {"a": 1},
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "start_ms": 3000,
+                    "end_ms": 4200,
+                    "text": "Payments are still failing.",
+                    "metadata": {"a": 2},
+                },
+            ]
+        )
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+
+        chunks = await store.get_source_chunks_by_source_id("source-1")
+        order_query = cursor.executions[0][0]
+        self.assertEqual(order_query.count("ORDER BY chunk_index ASC"), 1)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0]["chunk_index"], 0)
+        self.assertEqual(chunks[1]["chunk_index"], 1)
+
+    async def test_create_extraction_run_inserts_payload(self):
+        cursor = FakeCursor(fetchone_results=[{"id": "extraction-1"}])
+        store = FakeMeetingStore([cursor])
+        store._ready = True
+        extraction_id = await store.create_extraction_run(
+            source_id="source-1",
+            meeting_id="meeting-1",
+            run_type="full_meeting_extraction",
+            model="gpt-test",
+            prompt_version="meeting-extractor-v1",
+            output_json={"summary_short": "ok"},
+            status="success",
+        )
+
+        self.assertEqual(extraction_id, "extraction-1")
+        self.assertIn("INSERT INTO extraction_runs", cursor.executions[0][0])
+        self.assertEqual(cursor.executions[0][1][0], "source-1")
+        self.assertEqual(cursor.executions[0][1][1], "meeting-1")
 
 
 if __name__ == "__main__":

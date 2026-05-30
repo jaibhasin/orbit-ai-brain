@@ -54,6 +54,19 @@ CREATE TABLE IF NOT EXISTS source_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_source_chunks_source_id
     ON source_chunks(source_id, chunk_index);
+
+CREATE TABLE IF NOT EXISTS extraction_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
+    meeting_id UUID REFERENCES meetings(id) ON DELETE CASCADE,
+    run_type TEXT NOT NULL,
+    model TEXT,
+    prompt_version TEXT,
+    output_json JSONB,
+    status TEXT DEFAULT 'success',
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -106,6 +119,44 @@ class DisabledMeetingStore:
         source_id = payload.get("sourceId") or payload.get("source_id")
         chunks = payload.get("chunks") or []
         return await self.save_transcript_chunks(source_id, chunks)
+
+    async def get_source_chunks_by_source_id(self, source_id: str):
+        return []
+
+    async def getSourceChunksBySourceId(self, source_id: str):
+        return await self.get_source_chunks_by_source_id(source_id)
+
+    async def create_extraction_run(
+        self,
+        *,
+        source_id: str | None = None,
+        meeting_id: str | None = None,
+        run_type: str = "full_meeting_extraction",
+        model: str | None = None,
+        prompt_version: str | None = None,
+        output_json: dict | list | None = None,
+        status: str = "success",
+        error: str | None = None,
+    ):
+        return None
+
+    async def createExtractionRun(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_extraction_run(
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            run_type=payload.get("runType") or payload.get("run_type", "full_meeting_extraction"),
+            model=payload.get("model"),
+            prompt_version=payload.get("promptVersion") or payload.get("prompt_version"),
+            output_json=payload.get("outputJson") if "outputJson" in payload else payload.get("output_json"),
+            status=payload.get("status", "success"),
+            error=payload.get("error"),
+        )
+
+    async def get_meeting_by_id(self, meeting_id: str):
+        return None
 
 
 @dataclass
@@ -235,6 +286,35 @@ class PostgresMeetingStore:
                 await conn.commit()
                 return row["id"] if row else None
 
+    async def get_meeting_by_id(self, meeting_id: str):
+        if not meeting_id:
+            return None
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        source_id,
+                        gmeet_url,
+                        status,
+                        requested_by_person_id,
+                        created_at,
+                        updated_at,
+                        started_at,
+                        ended_at,
+                        summary_short,
+                        summary_long
+                    FROM meetings
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (meeting_id,),
+                )
+                return await cursor.fetchone()
+
     async def update_meeting_status(
         self,
         meeting_id: str,
@@ -323,6 +403,87 @@ class PostgresMeetingStore:
         source_id = payload.get("sourceId") or payload.get("source_id")
         chunks = payload.get("chunks") or []
         return await self.save_transcript_chunks(source_id, chunks)
+
+    async def get_source_chunks_by_source_id(self, source_id: str):
+        if not source_id:
+            return []
+
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT chunk_index, speaker_label, start_ms, end_ms, text, metadata
+                    FROM source_chunks
+                    WHERE source_id = %s
+                    ORDER BY chunk_index ASC
+                    """,
+                    (source_id,),
+                )
+                return (await cursor.fetchall()) or []
+
+    async def getSourceChunksBySourceId(self, source_id: str):
+        return await self.get_source_chunks_by_source_id(source_id)
+
+    async def create_extraction_run(
+        self,
+        *,
+        source_id: str | None = None,
+        meeting_id: str | None = None,
+        run_type: str = "full_meeting_extraction",
+        model: str | None = None,
+        prompt_version: str | None = None,
+        output_json: dict | list | None = None,
+        status: str = "success",
+        error: str | None = None,
+    ):
+        await self._ensure_ready()
+        async with await self._connect() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    INSERT INTO extraction_runs (
+                        source_id,
+                        meeting_id,
+                        run_type,
+                        model,
+                        prompt_version,
+                        output_json,
+                        status,
+                        error
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        source_id,
+                        meeting_id,
+                        run_type,
+                        model,
+                        prompt_version,
+                        json.dumps(output_json) if output_json is not None else None,
+                        status,
+                        error,
+                    ),
+                )
+                row = await cursor.fetchone()
+                await conn.commit()
+                return row["id"] if row else None
+
+    async def createExtractionRun(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        return await self.create_extraction_run(
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            run_type=payload.get("runType") or payload.get("run_type", "full_meeting_extraction"),
+            model=payload.get("model"),
+            prompt_version=payload.get("promptVersion") or payload.get("prompt_version"),
+            output_json=payload.get("outputJson") if "outputJson" in payload else payload.get("output_json"),
+            status=payload.get("status", "success"),
+            error=payload.get("error"),
+        )
 
     def _normalize_source_chunk(self, chunk: dict) -> dict | None:
         if not isinstance(chunk, dict):

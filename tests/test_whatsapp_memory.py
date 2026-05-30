@@ -2,6 +2,38 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import sys
+import types
+
+
+if "twilio" not in sys.modules:
+    twilio_module = types.ModuleType("twilio")
+    twilio_rest_module = types.ModuleType("twilio.rest")
+    twilio_twiml_module = types.ModuleType("twilio.twiml")
+    twilio_messaging_module = types.ModuleType("twilio.twiml.messaging_response")
+
+    class MessagingResponse:
+        def __init__(self, *args, **kwargs):
+            self._value = ""
+
+        def message(self, body=None):
+            if body is not None:
+                self._value = body
+            return self._value
+
+        def __str__(self):
+            return str(self._value)
+
+    twilio_rest_module.Client = object
+    twilio_messaging_module.MessagingResponse = MessagingResponse
+    twilio_module.rest = twilio_rest_module
+    twilio_module.twiml = twilio_twiml_module
+    twilio_twiml_module.messaging_response = twilio_messaging_module
+
+    sys.modules["twilio"] = twilio_module
+    sys.modules["twilio.rest"] = twilio_rest_module
+    sys.modules["twilio.twiml"] = twilio_twiml_module
+    sys.modules["twilio.twiml.messaging_response"] = twilio_messaging_module
 
 from orbit.meet_types import ChatMessage, MeetingState
 from orbit.memory import MemoryAnswer, MemorySource
@@ -69,6 +101,9 @@ class FakeMeetingStore:
         self.saved_chunks = []
         self.transcript_save_calls = []
         self.fail_save_chunks = False
+        self.extraction_runs = []
+        self.source_chunks_for_id = {}
+        self.meetings_lookup = {}
 
     async def find_or_create_person_by_phone(self, phone, name=None):
         self.people.append((phone, name))
@@ -108,6 +143,7 @@ class FakeMeetingStore:
     ):
         self.meetings.append(
             {
+                "id": "meeting-1",
                 "gmeet_url": gmeet_url,
                 "source_id": source_id,
                 "status": status,
@@ -118,6 +154,7 @@ class FakeMeetingStore:
                 "ended_at": ended_at,
             }
         )
+        self.meetings_lookup["meeting-1"] = self.meetings[-1]
         return "meeting-1"
 
     async def update_meeting_status(self, meeting_id, status, **kwargs):
@@ -135,24 +172,82 @@ class FakeMeetingStore:
         chunks = payload["chunks"]
         return await self.save_transcript_chunks(source_id, chunks)
 
+    async def get_source_chunks_by_source_id(self, source_id):
+        return list(self.source_chunks_for_id.get(source_id, []))
+
+    async def getSourceChunksBySourceId(self, source_id):
+        return await self.get_source_chunks_by_source_id(source_id)
+
+    async def create_extraction_run(
+        self,
+        *,
+        source_id=None,
+        meeting_id=None,
+        run_type=None,
+        model=None,
+        prompt_version=None,
+        output_json=None,
+        status=None,
+        error=None,
+    ):
+        run_id = f"extract-{len(self.extraction_runs) + 1}"
+        self.extraction_runs.append(
+            {
+                "source_id": source_id,
+                "meeting_id": meeting_id,
+                "run_type": run_type,
+                "model": model,
+                "prompt_version": prompt_version,
+                "output_json": output_json,
+                "status": status,
+                "error": error,
+            }
+        )
+        return run_id
+
+    async def createExtractionRun(self, payload):
+        return await self.create_extraction_run(
+            source_id=payload.get("sourceId") or payload.get("source_id"),
+            meeting_id=payload.get("meetingId") or payload.get("meeting_id"),
+            run_type=payload.get("runType") or payload.get("run_type"),
+            model=payload.get("model"),
+            prompt_version=payload.get("promptVersion") or payload.get("prompt_version"),
+            output_json=payload.get("outputJson") if "outputJson" in payload else payload.get("output_json"),
+            status=payload.get("status"),
+            error=payload.get("error"),
+        )
+
+    async def get_meeting_by_id(self, meeting_id):
+        meeting = self.meetings_lookup.get(meeting_id)
+        if meeting:
+            return meeting
+        if self.meetings:
+            for created in self.meetings:
+                if created.get("id") == meeting_id:
+                    return created
+        return None
+
 
 class FakeCompletions:
-    def __init__(self):
+    def __init__(self, responses=None):
+        self.responses = list(responses or [])
         self.calls = []
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
+        if self.responses:
+            return FakeResponse(self.responses.pop(0))
         return FakeResponse("General answer from Orbit.")
 
 
 class FakeChat:
-    def __init__(self):
-        self.completions = FakeCompletions()
+    def __init__(self, responses=None):
+        self.completions = FakeCompletions(responses=responses)
 
 
 class FakeOpenAIClient:
-    def __init__(self):
-        self.chat = FakeChat()
+    def __init__(self, responses=None):
+        self.chat = FakeChat(responses=responses)
 
 
 class FakeLiveSTT:
@@ -314,7 +409,22 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_finished_marks_meeting_processed(self):
         store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                    "metadata": {},
+                }
+            ]
+        }
         service = build_service(meeting_store=store)
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Orbit recap","summary_long":"Aman launch update and Ravi issue.","decisions":[],"action_items":[],"risks":[],"open_questions":[],"durable_memories":[]}'
+            ]
+        )
         state = MeetingState(
             session_id="session-1",
             meet_url="https://meet.google.com/abc-defg-hij",
@@ -351,10 +461,82 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(store.updates[0]["status"], "processing")
         self.assertEqual(store.updates[-1]["status"], "processed")
+        self.assertEqual(store.extraction_runs[-1]["status"], "success")
         fields = store.updates[-1]["fields"]
         self.assertEqual(fields["ended_at"], "2026-05-31T11:00:00")
         self.assertEqual(fields["started_at"], "2026-05-31T10:00:00")
         self.assertIn("chat messages captured", fields["summary_short"])
+
+    async def test_run_meeting_extraction_success(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+                {
+                    "chunk_index": 1,
+                    "speaker_label": "Ravi",
+                    "text": "Payments are still failing.",
+                },
+            ]
+        }
+        service = build_service(
+            memory=FakeMemory(),
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                '{"summary_short":"Launch update","summary_long":"Aman said launch and Ravi reported payments issue.","decisions":[],"action_items":[],"risks":[],"open_questions":[],"durable_memories":[]}'
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(store.extraction_runs), 1)
+        self.assertEqual(store.extraction_runs[0]["status"], "success")
+        self.assertEqual(store.updates[0]["status"], "processing")
+        self.assertEqual(store.updates[-1]["status"], "processed")
+        self.assertEqual(store.extraction_runs[0]["output_json"]["summary_short"], "Launch update")
+
+    async def test_run_meeting_extraction_failed_on_non_json_output(self):
+        store = FakeMeetingStore()
+        store.source_chunks_for_id = {
+            "source-1": [
+                {
+                    "chunk_index": 0,
+                    "speaker_label": "Aman",
+                    "text": "We should launch next week.",
+                },
+            ]
+        }
+        service = build_service(
+            meeting_store=store,
+        )
+        service.openai_client = FakeOpenAIClient(
+            responses=[
+                "Sorry I cannot give JSON."
+            ]
+        )
+        result = await service.runMeetingExtraction(
+            {
+                "meetingId": "meeting-1",
+                "sourceId": "source-1",
+            }
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(len(store.extraction_runs), 1)
+        self.assertEqual(store.extraction_runs[0]["status"], "failed")
+        self.assertEqual(store.updates[-1]["status"], "failed")
+        self.assertIn("output_json", store.extraction_runs[0])
 
     async def test_session_finished_marks_meeting_failed_when_chunk_save_fails(self):
         store = FakeMeetingStore()
