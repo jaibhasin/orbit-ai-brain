@@ -15,6 +15,7 @@ from fastapi import FastAPI, Form, HTTPException, Request, Response, WebSocket  
 from twilio.request_validator import RequestValidator  # noqa: E402
 
 from orbit.whatsapp_service import OrbitWhatsAppService  # noqa: E402
+from orbit.meeting_intelligence_routes import router as meeting_intelligence_router  # noqa: E402
 
 
 class TwiMLResponse(Response):
@@ -61,6 +62,7 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(meeting_intelligence_router)
 
 
 @app.get("/", summary="Orbit webhook status")
