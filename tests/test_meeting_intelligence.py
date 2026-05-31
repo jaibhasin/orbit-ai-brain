@@ -3,11 +3,19 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+try:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+except ModuleNotFoundError:
+    FastAPI = None
+    TestClient = None
 
-import orbit.meeting_intelligence_routes as meeting_intelligence_routes
-from orbit.meeting_intelligence_repository import MeetingIntelligenceRepository
+if FastAPI is not None:
+    import orbit.meeting_intelligence_routes as meeting_intelligence_routes
+    from orbit.meeting_intelligence_repository import MeetingIntelligenceRepository
+else:
+    meeting_intelligence_routes = None
+    MeetingIntelligenceRepository = None
 
 
 class FakeStore:
@@ -46,6 +54,7 @@ class FakeStore:
         return self.memories.get(meeting_id, [])
 
 
+@unittest.skipIf(FastAPI is None, "fastapi is not installed")
 class MeetingIntelligenceEndpointTests(unittest.TestCase):
     def _get(self, meeting_id: str, repository):
         app = FastAPI()

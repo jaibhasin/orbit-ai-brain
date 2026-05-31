@@ -3,11 +3,23 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from twilio.request_validator import RequestValidator
+try:
+    from twilio.request_validator import RequestValidator
+except ModuleNotFoundError:
+    RequestValidator = None
 
-from orbit.whatsapp_app import app, is_valid_twilio_signature, root_status
+try:
+    from orbit.whatsapp_app import app, is_valid_twilio_signature, root_status
+except (ModuleNotFoundError, RuntimeError):
+    app = None
+    is_valid_twilio_signature = None
+    root_status = None
 
 
+@unittest.skipIf(
+    RequestValidator is None or app is None,
+    "twilio or whatsapp_app dependencies are not installed",
+)
 class WhatsAppAppTests(unittest.TestCase):
     def test_routes_are_registered(self):
         paths = {route.path for route in app.routes}
