@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-import asyncio
 import os
 import re
 from uuid import UUID
@@ -121,20 +120,6 @@ def _normalize_phone_for_whatsapp(phone: str | None) -> str | None:
             return f"whatsapp:{normalized}"
         return f"whatsapp:+{normalized}"
     return normalized
-
-
-def _run_sync(coro):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    if loop.is_running():
-        raise RuntimeError(
-            "Synchronous agent tools cannot be executed inside a running asyncio loop. "
-            "Call the underlying async helper directly."
-        )
-    return loop.run_until_complete(coro)
 
 
 async def _query_rows(database_url: str, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
