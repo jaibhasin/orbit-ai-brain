@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from orbit.agent.tools._shared import (
     NotFoundError,
-    _normalize_phone_for_whatsapp,
+    _format_phone_for_whatsapp,
     _query_row,
     _require_database_url,
     _require_uuid,
@@ -37,7 +37,7 @@ async def send_whatsapp_reply(person_id: str, text: str) -> dict:
             message="Person not found.",
         )
 
-    to_number = _normalize_phone_for_whatsapp(person["phone"])
+    to_number = _format_phone_for_whatsapp(person["phone"])
     if not to_number:
         raise ValueError("Person has no valid phone number.")
 

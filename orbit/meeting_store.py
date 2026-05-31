@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from orbit.phone_numbers import normalize_whatsapp_phone
+
 
 MEETING_SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -395,6 +397,7 @@ class PostgresMeetingStore:
         self._ready = True
 
     async def find_or_create_person_by_phone(self, phone: str, name: str | None = None) -> str | None:
+        phone = normalize_whatsapp_phone(phone)
         if not phone:
             return None
 

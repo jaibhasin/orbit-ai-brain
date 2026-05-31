@@ -7,6 +7,7 @@ from orbit.agent.whatsapp.command_handler import (
     JOIN_HELP_MESSAGE,
     UNREGISTERED_PHONE_MESSAGE,
     handle_whatsapp_command,
+    resolve_person_id_by_whatsapp_phone,
 )
 from orbit.agent.whatsapp.command_parser import (
     HELP_TEXT as PARSER_HELP_TEXT,
@@ -14,6 +15,7 @@ from orbit.agent.whatsapp.command_parser import (
     is_valid_google_meet_url,
     parse_whatsapp_command,
 )
+from orbit.phone_numbers import normalize_whatsapp_phone
 
 
 VALID_PERSON_ID = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
@@ -21,6 +23,10 @@ VALID_MEETING_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 class WhatsAppCommandParserTests(unittest.TestCase):
+    def test_normalize_whatsapp_phone(self):
+        self.assertEqual(normalize_whatsapp_phone("whatsapp:+15551234567"), "+15551234567")
+        self.assertEqual(normalize_whatsapp_phone("+15551234567"), "+15551234567")
+
     def test_parse_help_and_recent(self):
         self.assertEqual(parse_whatsapp_command("help").name, "help")
         self.assertEqual(parse_whatsapp_command("recent").name, "recent")
@@ -43,6 +49,17 @@ class WhatsAppCommandParserTests(unittest.TestCase):
 
 
 class WhatsAppCommandHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_person_lookup_resolves_twilio_sender_to_stored_e164_phone(self):
+        with patch("orbit.agent.whatsapp.command_handler._require_database_url", return_value="postgresql://example"):
+            with patch(
+                "orbit.agent.whatsapp.command_handler._query_row",
+                return_value={"id": VALID_PERSON_ID, "phone": "+15551234567"},
+            ) as query_row:
+                person_id = await resolve_person_id_by_whatsapp_phone("whatsapp:+15551234567")
+
+        self.assertEqual(person_id, VALID_PERSON_ID)
+        self.assertIn("+15551234567", query_row.await_args.args[2])
+
     async def test_unregistered_phone_receives_safe_message(self):
         with patch("orbit.agent.whatsapp.command_handler.resolve_person_id_by_whatsapp_phone", return_value=None):
             reply = await handle_whatsapp_command("whatsapp:+15551230000", "help")

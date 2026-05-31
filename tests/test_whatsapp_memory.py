@@ -718,7 +718,7 @@ class WhatsAppMemoryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["status"], "started")
-        self.assertEqual(store.people, [("15551234567", None)])
+        self.assertEqual(store.people, [("+15551234567", None)])
         self.assertEqual(store.sources[0]["url"], "https://meet.google.com/abc-defg-hij")
         self.assertEqual(store.meetings[0]["status"], "joining")
         self.assertEqual(store.meetings[0]["requested_by_person_id"], "person-1")

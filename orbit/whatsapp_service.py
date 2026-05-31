@@ -23,6 +23,7 @@ from orbit.meet_types import (
     build_meeting_state,
 )
 from orbit.meeting_store import build_meeting_store
+from orbit.phone_numbers import normalize_whatsapp_phone
 from orbit.memory import MemoryAnswer, MemorySource, build_memory_service
 from orbit.live_stt import LiveAudioFormat, LiveSTTManager
 from orbit.transcript import TranscriptSegment, format_timestamp_ms
@@ -397,7 +398,7 @@ class OrbitWhatsAppService:
 
         try:
             person_id = await store.find_or_create_person_by_phone(
-                self._normalize_person_phone(from_number),
+                normalize_whatsapp_phone(from_number),
                 name=profile_name,
             )
             source_id = await store.create_source(
@@ -414,10 +415,6 @@ class OrbitWhatsAppService:
         except Exception as error:
             log(f"Failed to create meeting persistence row for {meet_url}: {error}", level="error")
             return None, None
-
-    @staticmethod
-    def _normalize_person_phone(raw_phone):
-        return (raw_phone or "").replace("whatsapp:", "").strip() or None
 
     async def _run_session(self, active, config):
         callbacks = MeetingSessionCallbacks(

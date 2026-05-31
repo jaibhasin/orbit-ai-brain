@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 
 from orbit.agent.tools import (
@@ -18,6 +17,7 @@ from orbit.agent.whatsapp.command_parser import (
     parse_whatsapp_command,
 )
 from orbit.core import log
+from orbit.phone_numbers import normalize_whatsapp_phone
 
 UNREGISTERED_PHONE_MESSAGE = (
     "You are not registered yet. Please ask an admin to add your WhatsApp number."
@@ -25,12 +25,8 @@ UNREGISTERED_PHONE_MESSAGE = (
 JOIN_HELP_MESSAGE = "Please send: join <google-meet-link>"
 
 
-def _normalize_whatsapp_phone(phone: str) -> str:
-    return re.sub(r"\s+", "", (phone or "").strip().replace("whatsapp:", ""))
-
-
 def _build_phone_candidates(raw_phone: str) -> list[str]:
-    normalized = _normalize_whatsapp_phone(raw_phone)
+    normalized = normalize_whatsapp_phone(raw_phone)
     if not normalized:
         return []
 

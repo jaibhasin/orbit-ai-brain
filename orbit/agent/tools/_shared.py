@@ -6,6 +6,8 @@ import os
 import re
 from uuid import UUID
 
+from orbit.phone_numbers import normalize_whatsapp_phone
+
 
 _GOOGLE_MEET_URL_PATTERN = re.compile(
     r"^https?://(?:www\.)?meet\.google\.com/[a-z0-9-]+(?:/[^\s]*)?(?:\?.*)?$",
@@ -111,15 +113,11 @@ def _normalize_optional_owner_text(value: str | None) -> str | None:
     return text or None
 
 
-def _normalize_phone_for_whatsapp(phone: str | None) -> str | None:
-    normalized = (phone or "").strip().replace(" ", "")
+def _format_phone_for_whatsapp(phone: str | None) -> str | None:
+    normalized = normalize_whatsapp_phone(phone)
     if not normalized:
         return None
-    if not normalized.startswith("whatsapp:"):
-        if normalized.startswith("+"):
-            return f"whatsapp:{normalized}"
-        return f"whatsapp:+{normalized}"
-    return normalized
+    return f"whatsapp:{normalized}"
 
 
 async def _query_rows(database_url: str, sql: str, params: tuple[Any, ...] | list[Any] | None = None):
