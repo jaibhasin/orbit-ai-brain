@@ -4,6 +4,13 @@ import asyncio
 import unittest
 
 try:
+    from fastapi.testclient import TestClient
+except ModuleNotFoundError:
+    TestClient = None
+
+from unittest.mock import MagicMock, patch
+
+try:
     from twilio.request_validator import RequestValidator
 except ModuleNotFoundError:
     RequestValidator = None
@@ -21,6 +28,39 @@ except (ModuleNotFoundError, RuntimeError):
     "twilio or whatsapp_app dependencies are not installed",
 )
 class WhatsAppAppTests(unittest.TestCase):
+    @unittest.skipIf(TestClient is None, "fastapi TestClient is not installed")
+    def test_inbound_webhook_returns_twiml_and_does_not_use_send_whatsapp_reply(self):
+        with patch("orbit.whatsapp_app.OrbitWhatsAppService") as service_cls:
+            service = MagicMock()
+            service.twilio_auth_token = "test-auth-token"
+            service_cls.return_value = service
+
+            with patch("orbit.whatsapp_app.handle_whatsapp_command") as handler:
+                handler.return_value = "help text"
+
+                with patch("orbit.agent.tools.whatsapp_tools.send_whatsapp_reply") as send_reply:
+                    with TestClient(app) as client:
+                        request_url = "http://testserver/twilio/whatsapp"
+                        signature = RequestValidator("test-auth-token").compute_signature(
+                            request_url,
+                            {
+                                "From": "whatsapp:+15551234567",
+                                "Body": "help",
+                            },
+                        )
+
+                        response = client.post(
+                            "/twilio/whatsapp",
+                            data={"From": "whatsapp:+15551234567", "Body": "help"},
+                            headers={"X-Twilio-Signature": signature},
+                        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/xml", response.headers["content-type"])
+        self.assertEqual(response.text, "<Response><Message>help text</Message></Response>")
+        handler.assert_awaited_once_with("whatsapp:+15551234567", "help")
+        send_reply.assert_not_called()
+
     def test_routes_are_registered(self):
         paths = {route.path for route in app.routes}
 

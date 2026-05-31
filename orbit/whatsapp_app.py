@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlparse
+from html import escape
 
 from orbit.core import ensure_browser_use_runtime, configure_dependency_logging, env_int, log, load_dotenv
 
@@ -16,6 +17,7 @@ from twilio.request_validator import RequestValidator  # noqa: E402
 
 from orbit.whatsapp_service import OrbitWhatsAppService  # noqa: E402
 from orbit.meeting_intelligence_routes import router as meeting_intelligence_router  # noqa: E402
+from orbit.agent.whatsapp.command_handler import handle_whatsapp_command  # noqa: E402
 
 
 class TwiMLResponse(Response):
@@ -102,7 +104,10 @@ async def handle_whatsapp_webhook(
     ):
         raise HTTPException(status_code=403, detail="Invalid Twilio signature.")
 
-    xml_body = await service.handle_incoming_message(From, Body, profile_name=ProfileName)
+    _ = ProfileName
+    reply_text = await handle_whatsapp_command(From, Body)
+    escaped_reply = escape((reply_text or "").strip())
+    xml_body = f"<Response><Message>{escaped_reply}</Message></Response>" if escaped_reply else "<Response />"
     return TwiMLResponse(content=xml_body)
 
 
